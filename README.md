@@ -97,12 +97,35 @@ Grant these permissions in System Settings > Privacy & Security:
 - **Accessibility** → Terminal (for key monitoring + auto-paste)
 - **Screen Recording** → Terminal (for screenshot context)
 
+### Auto-start (launchd)
+
+To run the client automatically at login:
+
+```bash
+# Copy files
+mkdir -p ~/voice-input
+cp mac_client.py ~/voice-input/
+cp com.voice-input.client.plist ~/Library/LaunchAgents/
+
+# Edit the plist — replace YOUR_USERNAME and YOUR_SERVER_IP
+vi ~/Library/LaunchAgents/com.voice-input.client.plist
+
+# Load (starts immediately and on every login)
+launchctl load ~/Library/LaunchAgents/com.voice-input.client.plist
+
+# Stop / unload
+launchctl unload ~/Library/LaunchAgents/com.voice-input.client.plist
+
+# View logs
+tail -f ~/Library/Logs/voice-input.log
+```
+
 ## Usage
 
 ### Push-to-talk
 
 1. **Hold left Option/Alt** — Recording starts, screenshot captured, streaming begins
-2. **During recording** — Partial transcription shown in floating HUD near cursor
+2. **During recording** — Partial transcription shown in floating HUD at screen bottom
 3. **Release** — Final audio transcribed with VAD → LLM refines with screen context → result pasted
 
 ### Client options
@@ -253,6 +276,7 @@ Server → Client: {"type": "result", ...}
 | `VISION_SERVERS` | *(unset = local Ollama)* | Comma-separated Ollama URLs for remote vision inference |
 | `WHISPER_MODEL` | `large-v3-turbo` | Whisper model name |
 | `DEFAULT_LANGUAGE` | `ja` | Default language for transcription |
+| `VOICE_INPUT_SERVER` | `ws://localhost:8991` | Mac client: default WebSocket server URL |
 
 **Example: separate vision server** (recommended for single-GPU setups):
 
