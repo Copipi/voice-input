@@ -640,10 +640,11 @@ Usage:
   python3 mac_client.py --server ws://your-gpu-server:8991 --language en
         """,
     )
+    default_server = os.environ.get("VOICE_INPUT_SERVER", "ws://localhost:8991")
     parser.add_argument(
         "-s", "--server",
-        default="ws://localhost:8991",
-        help="WebSocket server URL (default: ws://localhost:8991)",
+        default=default_server,
+        help=f"WebSocket server URL (default: {default_server})",
     )
     parser.add_argument("-l", "--language", default="ja", help="Language (default: ja)")
     parser.add_argument("-m", "--model", default="gpt-oss:20b", help="Ollama model")
