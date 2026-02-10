@@ -97,28 +97,39 @@ Grant these permissions in System Settings > Privacy & Security:
 - **Accessibility** → Terminal (for key monitoring + auto-paste)
 - **Screen Recording** → Terminal (for screenshot context)
 
-### Auto-start (launchd)
+### Auto-start (Automator app)
 
-To run the client automatically at login:
+macOS requires a `.app` bundle to grant privacy permissions (Accessibility, Input Monitoring, etc.). A raw `python3` process launched by launchd cannot receive these permissions. The recommended approach is to wrap the client in an Automator application:
+
+1. **Copy the client script**
 
 ```bash
-# Copy files
 mkdir -p ~/voice-input
 cp mac_client.py ~/voice-input/
-cp com.voice-input.client.plist ~/Library/LaunchAgents/
-
-# Edit the plist — replace YOUR_USERNAME and YOUR_SERVER_IP
-vi ~/Library/LaunchAgents/com.voice-input.client.plist
-
-# Load (starts immediately and on every login)
-launchctl load ~/Library/LaunchAgents/com.voice-input.client.plist
-
-# Stop / unload
-launchctl unload ~/Library/LaunchAgents/com.voice-input.client.plist
-
-# View logs
-tail -f ~/Library/Logs/voice-input.log
 ```
+
+2. **Create an Automator app**
+
+   - Open **Automator.app** → choose **Application**
+   - Add a **Run Shell Script** action
+   - Set Shell to `/bin/bash` and paste:
+
+```bash
+cd ~/voice-input && /usr/bin/python3 mac_client.py --server ws://YOUR_SERVER_IP:8991
+```
+
+   - Save as `~/Applications/VoiceInput.app`
+
+3. **Grant permissions** in System Settings > Privacy & Security:
+   - **Accessibility** → VoiceInput.app
+   - **Input Monitoring** → VoiceInput.app
+   - **Microphone** → VoiceInput.app
+   - **Screen Recording** → VoiceInput.app
+
+4. **Add to Login Items** for auto-start:
+   - System Settings > General > Login Items → add VoiceInput.app
+
+Double-click VoiceInput.app to launch. The HUD appears at the bottom of the screen when the client is running.
 
 ## Usage
 
