@@ -19,7 +19,7 @@ done
 
 # Pull default models if not present
 LLM_MODEL="${LLM_MODEL:-gpt-oss:20b}"
-VISION_MODEL="${VISION_MODEL:-llava:latest}"
+VISION_MODEL="${VISION_MODEL:-qwen3-vl:8b-instruct}"
 
 echo "Checking models..."
 ollama pull "$LLM_MODEL" 2>/dev/null || echo "Warning: could not pull $LLM_MODEL"

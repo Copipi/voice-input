@@ -146,7 +146,7 @@ class _Poller(NSObject):
                 msg = parts[1].strip() if len(parts) > 1 else TEXTS.get(stage, stage)
                 _show_hud(msg)
                 if stage in ("done", "error"):
-                    _hide_at = now + 1.5
+                    _hide_at = now + 0.2
         except queue.Empty:
             pass
 
@@ -339,7 +339,7 @@ class VoiceInputClient:
             dur = data.get("duration", 0)
 
             print(f"\n  Done ({t_trans + t_ref:.1f}s)")
-            self._update_overlay("done", f"\u2713 {text[:100] if text else '(empty)'}")
+            self._update_overlay("done")
 
             if text:
                 self._output_text(text)
@@ -512,10 +512,11 @@ class VoiceInputClient:
 
     @staticmethod
     def _capture_screenshot():
-        """macOS screencaptureでスクリーンショットを取得しbase64で返す.
+        """macOS screencaptureでキーボードフォーカスウィンドウのスクリーンショットを取得しbase64で返す.
 
-        キーボードフォーカスのあるディスプレイのみキャプチャ。
-        マルチモニタ環境で全画面取得を防止し、ビジョン処理を高速化する。
+        osascript (System Events) でフォーカスウィンドウの位置・サイズを取得し、
+        screencapture -R でその領域のみキャプチャ。
+        スレッドセーフ（subprocess経由）、追加パッケージ不要。
         """
         import base64
         import tempfile
@@ -523,23 +524,32 @@ class VoiceInputClient:
 
         tmp_path = tempfile.mktemp(suffix=".png")
         try:
-            # キーボードフォーカスのあるスクリーンの領域を特定
-            capture_args = ["screencapture", "-x", "-C"]
+            capture_args = ["screencapture", "-x", "-o"]  # -x=無音, -o=影なし
+            window_name = None
+
+            # osascriptでフォーカスウィンドウの位置・サイズを取得（thread-safe）
             try:
-                from AppKit import NSScreen
-                focused = NSScreen.mainScreen()  # キーボードフォーカスのあるスクリーン
-                if focused and len(NSScreen.screens()) > 1:
-                    frame = focused.frame()
-                    primary = NSScreen.screens()[0]
-                    primary_h = primary.frame().size.height
-                    # NSScreen座標（左下原点）→ screencapture座標（左上原点）に変換
-                    x = int(frame.origin.x)
-                    y = int(primary_h - frame.origin.y - frame.size.height)
-                    w = int(frame.size.width)
-                    h = int(frame.size.height)
-                    capture_args.extend(["-R", f"{x},{y},{w},{h}"])
-            except ImportError:
-                capture_args.extend(["-D", "1"])
+                r = subprocess.run(
+                    ["osascript", "-e",
+                     'tell application "System Events"\n'
+                     '  set fp to first application process whose frontmost is true\n'
+                     '  set fw to first window of fp\n'
+                     '  set {px, py} to position of fw\n'
+                     '  set {sx, sy} to size of fw\n'
+                     '  return (name of fp) & "|" & px & "," & py & "," & sx & "," & sy\n'
+                     'end tell'],
+                    capture_output=True, text=True, timeout=2,
+                )
+                if r.returncode == 0 and "|" in r.stdout:
+                    name, rect = r.stdout.strip().split("|", 1)
+                    capture_args.extend(["-R", rect])
+                    window_name = name
+            except Exception:
+                pass
+
+            # osascript失敗時: 全スクリーンにフォールバック
+            if "-R" not in capture_args:
+                capture_args.append("-C")
 
             capture_args.append(tmp_path)
             result = subprocess.run(
@@ -549,14 +559,8 @@ class VoiceInputClient:
             if result.returncode != 0 or not os.path.exists(tmp_path):
                 return None
 
-            # リサイズ（VRAM節約 + 転送高速化: 最大幅900px）
-            try:
-                subprocess.run(
-                    ["sips", "--resampleWidth", "900", tmp_path],
-                    capture_output=True, timeout=5,
-                )
-            except Exception:
-                pass  # リサイズ失敗しても元画像で続行
+            if window_name:
+                print(f" [{window_name}]", end="", flush=True)
 
             with open(tmp_path, "rb") as f:
                 return base64.b64encode(f.read()).decode("ascii")

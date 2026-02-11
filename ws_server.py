@@ -48,8 +48,8 @@ logging.basicConfig(
 )
 log = logging.getLogger("ws_server")
 
-# Vision contextの最大文字数（LLM refine高速化のため制限）
-MAX_CONTEXT_LEN = 500
+# Vision contextの最大文字数
+MAX_CONTEXT_LEN = 2000
 
 # クライアント別設定
 client_configs: dict[str, dict] = {}
@@ -334,8 +334,8 @@ async def handle_stream_end(websocket, client_id: str):
                 context_hint = vision_result.get("analysis", "")
                 if len(context_hint) > MAX_CONTEXT_LEN:
                     context_hint = context_hint[:MAX_CONTEXT_LEN] + "..."
-                preview = context_hint.replace("\n", " ")[:80]
-                log.info(f"Vision ready ({analysis_time:.1f}s): {preview}")
+                log.info(f"Vision ready ({analysis_time:.1f}s, "
+                         f"{len(context_hint)} chars):\n{context_hint}")
             except Exception as e:
                 log.error(f"Vision error: {e}")
         else:

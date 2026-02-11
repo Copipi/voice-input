@@ -25,7 +25,7 @@ import os
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 DEFAULT_MODEL = os.environ.get("LLM_MODEL", "gpt-oss:20b")
-VISION_MODEL = os.environ.get("VISION_MODEL", "llava:latest")
+VISION_MODEL = os.environ.get("VISION_MODEL", "qwen3-vl:8b-instruct")
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "large-v3-turbo")
 DEFAULT_LANGUAGE = os.environ.get("DEFAULT_LANGUAGE", "ja")
 
@@ -41,15 +41,14 @@ VISION_SERVERS = (
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 
-VISION_ANALYZE_PROMPT = """この画面のスクリーンショットに表示されている内容をすべて読み取ってください。
+VISION_ANALYZE_PROMPT = """ユーザーが今入力しようとしているアクティブなタブ/ペインを特定し、その内容のテキストを読み取れ。
 
-やること:
-1. 画面に見えるテキストをできるだけ正確に読み取る（メール本文、チャットメッセージ、コード、URL、ボタンのラベル等）
-2. 使用中のアプリ・ウェブサイトを特定する
-3. ユーザーが何をしようとしているか（入力欄やカーソルの位置から判断）を説明する
-4. テキスト入力の文脈を要約する（返信先の内容、会話の流れ、編集中の内容等）
-
-画面に見えるものをそのまま詳しく記述してください。構造化フォーマットは不要です。"""
+ルール:
+- 1行目: アプリ名とアクティブタブのタイトル
+- アクティブタブ/ペインの本文テキストをそのまま正確に書き写せ（省略するな）
+- 非アクティブなタブ、サイドバー、ツールバー、アイコン、UIの説明は一切不要
+- カーソル/入力欄がある場合、その位置と周辺テキストを明記せよ
+- テキスト量を最大化せよ。装飾や構造化は不要"""
 
 # --- 言語別プロンプト ---
 _prompt_cache: dict[str, dict] = {}
@@ -130,7 +129,7 @@ def analyze_screenshot(screenshot_b64: str, vision_model: str = VISION_MODEL) ->
 
     VISION_SERVERS で指定されたサーバーに順番に試行。
     ローカルOllamaの場合は keep_alive=0 でVRAMを即解放する。
-    think:false が無視されるモデル向けに thinking フィールドもフォールバック取得。
+    instruct版モデル（qwen3-vl:8b-instruct）で直接contentに出力。
     """
     import logging
     import requests
@@ -150,8 +149,7 @@ def analyze_screenshot(screenshot_b64: str, vision_model: str = VISION_MODEL) ->
             },
         ],
         "stream": False,
-        "think": False,
-        "options": {"temperature": 0.1, "num_predict": 256, "num_ctx": 4096},
+        "options": {"temperature": 0.1, "num_predict": 1024, "num_ctx": 4096},
     }
     if is_local:
         payload["keep_alive"] = "0"
@@ -167,16 +165,12 @@ def analyze_screenshot(screenshot_b64: str, vision_model: str = VISION_MODEL) ->
 
             msg = data.get("message", {})
             content = msg.get("content", "")
-            thinking = msg.get("thinking", "")
 
             analysis_time = time.time() - t0
-            # think:false が無視される場合、thinking をフォールバックとして使用
-            analysis = content if content.strip() else thinking
             log.info(f"Vision done in {analysis_time:.1f}s "
-                     f"({len(analysis)} chars from "
-                     f"{'content' if content.strip() else 'thinking'})")
+                     f"({len(content)} chars):\n{content}")
             return {
-                "analysis": analysis,
+                "analysis": content,
                 "analysis_time": analysis_time,
             }
         except Exception as e:

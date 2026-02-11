@@ -8,7 +8,7 @@ Local voice input with screen-aware context. Push-to-talk on Mac, transcribed by
 
 - **Push-to-talk** — Hold left Option key on Mac to record, release to transcribe
 - **Real-time streaming** — Audio streamed every 2s with partial transcription results during recording
-- **Screen-aware context** — Screenshots captured at recording start, analyzed by a vision model (llava), and used to inform text refinement
+- **Screen-aware context** — Focused window screenshot captured at recording start, analyzed by a vision model (qwen3-vl) to extract active tab text content, and used to inform text refinement
 - **LLM text refinement** — Removes filler words, adds punctuation, formats lists as bullet points, and fixes recognition errors
 - **Multi-language support** — Language-specific prompts for Japanese, English, Chinese, and Korean (auto-detected or configurable)
 - **Floating HUD** — macOS cursor-following status overlay showing recording/transcribing/refining state
@@ -20,7 +20,7 @@ Local voice input with screen-aware context. Push-to-talk on Mac, transcribed by
 Mac (Push-to-Talk)              Server (GPU)
 ─────────────────               ─────────────
 [Hold Option key]
-  ├─ Capture screenshot ──────→ Vision analysis (llava)  ──┐
+  ├─ Capture screenshot ──────→ Vision analysis (qwen3-vl) ──┐
   ├─ Record audio                                          │
   ├─ Stream chunks (2s) ─────→ Whisper partial results     │
   │                              ↓ (shown in HUD)          │
@@ -49,7 +49,7 @@ python3 -m venv .venv
 
 # Install Ollama (https://ollama.com)
 ollama pull gpt-oss:20b    # Text refinement (or any model you prefer)
-ollama pull llava:latest    # Screenshot analysis (if running vision locally)
+ollama pull qwen3-vl:8b-instruct  # Screenshot analysis (if running vision locally)
 
 # Start WebSocket server
 python ws_server.py
@@ -68,13 +68,13 @@ docker build -t voice-input .
 # Run with GPU (vision on local Ollama)
 docker run --gpus all -p 8991:8991 \
   -e LLM_MODEL=gpt-oss:20b \
-  -e VISION_MODEL=llava:latest \
+  -e VISION_MODEL=qwen3-vl:8b-instruct \
   voice-input
 
 # Run with remote vision server (avoids VRAM contention)
 docker run --gpus all -p 8991:8991 \
   -e LLM_MODEL=gpt-oss:20b \
-  -e VISION_MODEL=qwen3-vl:8b \
+  -e VISION_MODEL=qwen3-vl:8b-instruct \
   -e VISION_SERVERS=http://vision-gpu:11434 \
   voice-input
 
@@ -254,7 +254,7 @@ If a language has no matching prompt file, it falls back to English, then Japane
 |-------|---------|------|-----------|
 | `large-v3-turbo` | Whisper speech recognition | ~3 GB | Loaded once at startup, stays in memory |
 | `gpt-oss:20b` | Text refinement (configurable) | ~12 GB | Managed by Ollama (load on demand), `think: "low"` for speed |
-| `qwen3-vl:8b` | Screenshot context analysis | ~5 GB | Runs on separate GPU server (no local VRAM usage) |
+| `qwen3-vl:8b-instruct` | Active tab text extraction (focused window screenshot) | ~5 GB | Runs on separate GPU server (no local VRAM usage) |
 
 ### WebSocket protocol
 
@@ -283,7 +283,7 @@ Server → Client: {"type": "result", ...}
 |----------|---------|-------------|
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama server URL for text refinement |
 | `LLM_MODEL` | `gpt-oss:20b` | Model for text refinement |
-| `VISION_MODEL` | `llava:latest` | Model for screenshot analysis |
+| `VISION_MODEL` | `qwen3-vl:8b-instruct` | Model for active tab text extraction |
 | `VISION_SERVERS` | *(unset = local Ollama)* | Comma-separated Ollama URLs for remote vision inference |
 | `WHISPER_MODEL` | `large-v3-turbo` | Whisper model name |
 | `DEFAULT_LANGUAGE` | `ja` | Default language for transcription |
@@ -292,7 +292,7 @@ Server → Client: {"type": "result", ...}
 **Example: separate vision server** (recommended for single-GPU setups):
 
 ```bash
-export VISION_MODEL=qwen3-vl:8b
+export VISION_MODEL=qwen3-vl:8b-instruct
 export VISION_SERVERS=http://gpu-server-1:11434,http://gpu-server-2:11434
 python ws_server.py
 ```
@@ -301,8 +301,8 @@ python ws_server.py
 
 - **Whisper** (~3 GB) is loaded once at server startup as a singleton
 - **LLM** (~12 GB for gpt-oss:20b) stays loaded in Ollama with `think: "low"` for fast inference (~0.5s)
-- **Vision** runs on local Ollama by default. Set `VISION_SERVERS` to offload to separate GPU(s) and avoid model swapping
-- Screenshot analysis runs in parallel with recording; if not ready when refinement starts, proceeds without context
+- **Vision** runs on local Ollama by default. Set `VISION_SERVERS` to offload to separate GPU(s) and avoid model swapping. Uses an active-tab-focused prompt to maximize text extraction from the focused window
+- Screenshots are captured at full resolution (no resize) for best OCR accuracy. Analysis runs in parallel with recording; if not ready when refinement starts, proceeds without context
 - VAD (Voice Activity Detection) is disabled for streaming chunks but enabled for final transcription
 
 ## Why?
