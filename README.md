@@ -11,7 +11,7 @@ Local voice input with screen-aware context. Push-to-talk on Mac, transcribed by
 - **Screen-aware context** — Focused window screenshot captured at recording start, analyzed by a vision model (qwen3-vl) to extract active tab text content, and used to inform text refinement
 - **LLM text refinement** — Removes filler words, adds punctuation, formats lists as bullet points, and fixes recognition errors
 - **Multi-language support** — Language-specific prompts for Japanese, English, Chinese, and Korean (auto-detected or configurable)
-- **Floating HUD** — macOS cursor-following status overlay showing recording/transcribing/refining state
+- **Floating HUD** — macOS cursor-following status overlay showing recording/transcribing/refining state. Background turns **green** when vision analysis completes during recording, so you know screen context will be used
 - **Auto-paste + Enter** — Result pasted via Cmd+V and Enter sent automatically. Hold Ctrl during recording to paste without Enter
 
 ## How it works
@@ -32,7 +32,7 @@ Mac (Push-to-Talk)              Server (GPU)
   Auto-paste via Cmd+V  ←───── Result ───┘
 ```
 
-The screenshot analysis runs **in parallel** with recording, so context is ready by the time you stop speaking. Partial transcription results are displayed during recording, giving immediate feedback.
+The screenshot analysis runs **in parallel** with recording. When it finishes, the HUD turns green to signal that screen context is available. Partial transcription results are displayed during recording, giving immediate feedback.
 
 ## Quick start
 
@@ -137,8 +137,27 @@ Double-click VoiceInput.app to launch. The HUD appears at the bottom of the scre
 
 1. **Hold left Option/Alt** — Recording starts, screenshot captured, streaming begins
 2. **During recording** — Partial transcription shown in floating HUD at screen bottom
-3. **Release** — Final audio transcribed with VAD → LLM refines with screen context → result pasted + **Enter sent**
-4. **Hold left Option/Alt + Ctrl** — Same as above, but paste only (no Enter) — useful for text editors
+3. **HUD turns green** — Vision analysis of your screen is complete; screen context will be used for refinement
+4. **Release** — Final audio transcribed with VAD → LLM refines with screen context → result pasted + **Enter sent**
+5. **Hold left Option/Alt + Ctrl** — Same as above, but paste only (no Enter) — useful for text editors
+
+### HUD indicator colors
+
+| Color | Meaning |
+|-------|---------|
+| Dark (default) | Recording in progress, vision analysis not yet complete |
+| **Green** | Vision analysis complete — screen context will be used for text refinement |
+
+The HUD automatically resets to dark at the start of each new recording.
+
+### Practical tips
+
+- **Short recordings (under ~10s):** Vision analysis may not finish in time. The HUD staying dark means your text will be refined without screen context. This is fine for simple dictation
+- **Longer recordings:** The HUD will turn green during recording, meaning the LLM will use your screen content to improve accuracy (e.g., recognizing technical terms visible on screen)
+- **For best accuracy with technical terms:** Wait until the HUD turns green before releasing the key. This gives the vision model time to read your screen and provide context to the LLM
+- **Claude Code / chat apps:** Use the default Alt mode — text is pasted and Enter is sent automatically, submitting your message instantly
+- **Text editors / documents:** Hold Alt + Ctrl — text is pasted without pressing Enter, so you can review before submitting
+- **Dictation in any language:** The system auto-detects the language from your speech. You can also set a language hint with `--language en` for better accuracy
 
 ### Client options
 
@@ -265,6 +284,7 @@ If a language has no matching prompt file, it falls back to English, then Japane
 Client → Server: {"type": "stream_start", "screenshot": "<base64>"}
 Client → Server: <binary WAV chunks> (every 2 seconds, cumulative audio)
 Server → Client: {"type": "partial", "text": "..."}  (after each chunk)
+Server → Client: {"type": "status", "stage": "vision_ready"}  (when screenshot analysis completes)
 Client → Server: <final binary WAV> → {"type": "stream_end"}
 Server → Client: {"type": "status", "stage": "refining"}
 Server → Client: {"type": "result", "text": "...", "raw_text": "...", ...}
