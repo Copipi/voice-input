@@ -111,10 +111,15 @@ def _stdin_reader():
             _cmd_queue.put(cmd)
     _cmd_queue.put("EXIT")
 
+_bg_green = False
+
 class _RoundedBG(NSView):
-    """角丸の半透明ダーク背景."""
+    """角丸の半透明背景（通常ダーク、Vision完了で緑）."""
     def drawRect_(self, rect):
-        NSColor.colorWithCalibratedRed_green_blue_alpha_(0.10, 0.10, 0.12, 0.88).set()
+        if _bg_green:
+            NSColor.colorWithCalibratedRed_green_blue_alpha_(0.08, 0.35, 0.12, 0.88).set()
+        else:
+            NSColor.colorWithCalibratedRed_green_blue_alpha_(0.10, 0.10, 0.12, 0.88).set()
         NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
             self.bounds(), 12, 12,
         ).fill()
@@ -144,11 +149,27 @@ class _Poller(NSObject):
                 parts = cmd.split(":", 1)
                 stage = parts[0].strip()
                 msg = parts[1].strip() if len(parts) > 1 else TEXTS.get(stage, stage)
+                _set_bg_color(stage)
+                if stage == "vision_ready":
+                    # 背景色だけ変える（テキストはそのまま）
+                    if _hud_bg:
+                        _hud_bg.setNeedsDisplay_(True)
+                    continue
                 _show_hud(msg)
                 if stage in ("done", "error"):
                     _hide_at = now + 0.2
         except queue.Empty:
             pass
+
+def _set_bg_color(stage):
+    """ステージに応じてHUD背景色を切り替え."""
+    global _bg_green
+    if stage == "vision_ready":
+        _bg_green = True
+    elif stage in ("recording", "done", "error"):
+        _bg_green = False
+    if _hud_bg:
+        _hud_bg.setNeedsDisplay_(True)
 
 def _show_hud(text):
     """画面下部中央にHUDを表示（電光掲示板スタイル）."""
@@ -321,6 +342,8 @@ class VoiceInputClient:
             elif stage == "transcribing":
                 print("  ⟳ Transcribing...", end="", flush=True)
                 self._update_overlay("transcribing")
+            elif stage == "vision_ready":
+                self._update_overlay("vision_ready")
             elif stage == "refining":
                 print(" → Refining...", end="", flush=True)
                 self._update_overlay("refining")

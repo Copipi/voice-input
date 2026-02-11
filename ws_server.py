@@ -63,7 +63,7 @@ class StreamState:
     """ストリーミングモードのクライアント状態."""
     __slots__ = (
         "active", "latest_audio", "latest_text", "vision_task",
-        "vision_start", "processing", "has_newer",
+        "vision_start", "processing", "has_newer", "vision_notified",
     )
 
     def __init__(self):
@@ -74,6 +74,7 @@ class StreamState:
         self.vision_start = 0.0
         self.processing = False  # Whisperが実行中か
         self.has_newer = False   # 処理中に新しい音声が到着したか
+        self.vision_notified = False  # Vision完了通知済みか
 
 
 stream_states: dict[str, StreamState] = {}
@@ -177,6 +178,7 @@ async def handle_stream_start(websocket, client_id: str, data: dict):
     state.latest_text = ""
     state.processing = False
     state.has_newer = False
+    state.vision_notified = False
 
     # 前回のvisionタスクが残っていればキャンセル
     if state.vision_task and not state.vision_task.done():
@@ -260,6 +262,19 @@ async def _stream_whisper_loop(websocket, client_id: str):
             log.error(f"Stream Whisper error: {e}")
         finally:
             Path(tmp_path).unlink(missing_ok=True)
+
+        # Vision完了を通知（一度だけ）
+        if (state.vision_task and state.vision_task.done()
+                and not state.vision_notified):
+            state.vision_notified = True
+            elapsed = time.time() - state.vision_start if state.vision_start else 0
+            try:
+                await send_json(websocket, {
+                    "type": "status", "stage": "vision_ready",
+                })
+                log.info(f"Vision ready notified to {client_id} ({elapsed:.1f}s)")
+            except Exception:
+                pass
 
         # 処理中に新しい音声が届いていたら再度処理
         if not state.has_newer or not state.active:
