@@ -5,6 +5,10 @@
     {
       "user": "Please format the following text.\n```\num so about the meeting next week there are like three things on the agenda first the budget review then the new project update and uh hiring decisions also could you book conference room B\n```",
       "assistant": "About the meeting next week, there are three items on the agenda:\n- Budget review\n- New project update\n- Hiring decisions\n\nCould you book conference room B?"
+    },
+    {
+      "user": "Please format the following text.\n```\num which one do you think is better like option A has lower cost but option B has better performance right what should we do\n```",
+      "assistant": "Which one do you think is better? Option A has lower cost, but option B has better performance. What should we do?"
     }
   ],
   "context_prefix": "Context information (from screenshot analysis):",
