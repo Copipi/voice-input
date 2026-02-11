@@ -137,7 +137,8 @@ Double-click VoiceInput.app to launch. The HUD appears at the bottom of the scre
 
 1. **Hold left Option/Alt** — Recording starts, screenshot captured, streaming begins
 2. **During recording** — Partial transcription shown in floating HUD at screen bottom
-3. **Release** — Final audio transcribed with VAD → LLM refines with screen context → result pasted
+3. **Release** — Final audio transcribed with VAD → LLM refines with screen context → result pasted + **Enter sent**
+4. **Hold left Option/Alt + Ctrl** — Same as above, but paste only (no Enter) — useful for text editors
 
 ### Client options
 

@@ -235,6 +235,8 @@ class VoiceInputClient:
         self._overlay_proc = None
         self._overlay_script_path = None
         self._stream_timer = None
+        self._ctrl_pressed = False
+        self._send_enter = True  # Alt only → Enter付き, Alt+Ctrl → Enterなし
 
     def start(self):
         """メインループを開始."""
@@ -245,7 +247,8 @@ class VoiceInputClient:
         print(f"  Paste:    {'clipboard+Cmd+V' if self.paste else 'clipboard only'}")
         print(f"  Screenshot: {'ON (context-aware)' if self.use_screenshot else 'OFF'}")
         print(f"")
-        print(f"  [左Option/Alt長押し] → 録音 → 離すと送信")
+        print(f"  [左Alt長押し]        → 録音 → ペースト + Enter")
+        print(f"  [左Alt+Ctrl長押し]   → 録音 → ペーストのみ（Enterなし）")
         print(f"  [Ctrl+C] → 終了")
         print()
 
@@ -338,11 +341,12 @@ class VoiceInputClient:
             t_ref = data.get("refine_time", 0)
             dur = data.get("duration", 0)
 
-            print(f"\n  Done ({t_trans + t_ref:.1f}s)")
+            enter_label = "+Enter" if self._send_enter else ""
+            print(f"\n  Done ({t_trans + t_ref:.1f}s){' ' + enter_label if enter_label else ''}")
             self._update_overlay("done")
 
             if text:
-                self._output_text(text)
+                self._output_text(text, send_enter=self._send_enter)
                 print(f"  → [{dur:.1f}s audio] {text[:80]}{'...' if len(text) > 80 else ''}")
             else:
                 print("  → (empty - no speech detected)")
@@ -354,8 +358,11 @@ class VoiceInputClient:
             print(f"\n  ✗ Error: {data.get('message', 'unknown')}")
             self._update_overlay("error", f"\u2717 {data.get('message', 'Error')[:40]}")
 
-    def _output_text(self, text: str):
-        """テキストをクリップボード経由でペースト."""
+    def _output_text(self, text: str, send_enter: bool = False):
+        """テキストをクリップボード経由でペースト.
+
+        send_enter=True の場合、ペースト後にReturnキーも送信する。
+        """
         try:
             # macOS pbcopy でクリップボードに設定
             proc = subprocess.Popen(
@@ -371,6 +378,13 @@ class VoiceInputClient:
                     "osascript", "-e",
                     'tell application "System Events" to keystroke "v" using command down'
                 ], check=True, capture_output=True)
+
+                if send_enter:
+                    time.sleep(0.05)
+                    subprocess.run([
+                        "osascript", "-e",
+                        'tell application "System Events" to key code 36'
+                    ], check=True, capture_output=True)
         except FileNotFoundError:
             # pbcopy がない環境（Linux等）→ pyperclip フォールバック
             try:
@@ -382,12 +396,18 @@ class VoiceInputClient:
 
     def _on_key_press(self, key):
         """キー押下時."""
+        if key == keyboard.Key.ctrl_l or key == keyboard.Key.ctrl_r:
+            self._ctrl_pressed = True
         if key == HOTKEY and not self.recording:
             self._start_recording()
 
     def _on_key_release(self, key):
         """キー離し時."""
+        if key == keyboard.Key.ctrl_l or key == keyboard.Key.ctrl_r:
+            self._ctrl_pressed = False
         if key == HOTKEY and self.recording:
+            # Alt離し時にCtrlが押されていればEnter送信しない
+            self._send_enter = not self._ctrl_pressed
             self._stop_recording()
 
     def _start_recording(self):
