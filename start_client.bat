@@ -50,6 +50,6 @@ REM - Hold %HOTKEY% to record, release to paste.
 REM - Hold Ctrl while releasing %HOTKEY% to paste without Enter.
 REM - Disable screenshot context: add --no-screenshot
 
-.venv\Scripts\python.exe win_client.py --server %SERVER% --model %MODEL% --hotkey %HOTKEY% --language zh
+    .venv\Scripts\python.exe win_client.py --server %SERVER% --model %MODEL% --hotkey %HOTKEY% --language zh
 
 pause
