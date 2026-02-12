@@ -229,8 +229,23 @@ def refine_with_llm(
     data = resp.json()
     refine_time = time.time() - t0
 
+    refined = data["message"]["content"]
+
+    # Guard: if refined text is drastically shorter, the LLM likely hallucinated
+    import logging
+    log = logging.getLogger("voice_input.refine")
+    raw_len = len(raw_text)
+    refined_len = len(refined)
+    if raw_len > 0 and refined_len < raw_len * 0.4:
+        log.warning(
+            "Refinement too short (%d -> %d chars), falling back to raw text",
+            raw_len,
+            refined_len,
+        )
+        refined = raw_text
+
     return {
-        "refined_text": data["message"]["content"],
+        "refined_text": refined,
         "model": model,
         "refine_time": refine_time,
     }
