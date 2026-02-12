@@ -8,7 +8,7 @@ echo.
 
 set SERVER=ws://127.0.0.1:8991
 set MODEL=gemma3:4b
-set HOTKEY=f8
+set HOTKEY=f9
 
 if not exist ".venv\Scripts\python.exe" (
   echo [voice-input] .venv not found. Bootstrapping with uv...
@@ -32,9 +32,21 @@ if not exist ".venv\Scripts\python.exe" (
     pause
     exit /b 1
   )
-  uv pip install --python .venv\Scripts\python.exe sounddevice numpy websockets pynput pyperclip pillow
+  uv pip install --python .venv\Scripts\python.exe sounddevice numpy websockets pynput pyperclip pillow keyboard
   if errorlevel 1 (
     echo [ERROR] Failed to install Windows client requirements.
+    pause
+    exit /b 1
+  )
+)
+
+REM Ensure `keyboard` is installed even if .venv already existed.
+.venv\Scripts\python.exe -m pip show keyboard >nul 2>nul
+if errorlevel 1 (
+  echo [voice-input] Installing missing dependency: keyboard
+  .venv\Scripts\python.exe -m pip install keyboard
+  if errorlevel 1 (
+    echo [ERROR] Failed to install keyboard.
     pause
     exit /b 1
   )

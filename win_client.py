@@ -37,7 +37,7 @@ from typing import Optional
 import numpy as np
 import sounddevice as sd
 import websockets
-from pynput import keyboard
+from pynput import keyboard as pynput_keyboard
 
 SAMPLE_RATE = 16000
 CHANNELS = 1
@@ -50,22 +50,93 @@ MAX_DISPLAY_CHARS = 200
 # Hotkey mapping
 # -------------------------
 
-def _parse_hotkey(name: str) -> keyboard.Key | keyboard.KeyCode:
+def _is_combo_hotkey(name: str) -> bool:
+    return "+" in (name or "")
+
+
+def _parse_hotkey(name: str) -> pynput_keyboard.Key | pynput_keyboard.KeyCode:
     name = (name or "").strip().lower()
-    mapping: dict[str, keyboard.Key | keyboard.KeyCode] = {
-        "f8": keyboard.Key.f8,
-        "f9": keyboard.Key.f9,
-        "f10": keyboard.Key.f10,
-        "alt_l": keyboard.Key.alt_l,
-        "alt_r": keyboard.Key.alt_r,
-        "shift_l": keyboard.Key.shift_l,
-        "shift_r": keyboard.Key.shift_r,
+    mapping: dict[str, pynput_keyboard.Key | pynput_keyboard.KeyCode] = {
+        "f8": pynput_keyboard.Key.f8,
+        "f9": pynput_keyboard.Key.f9,
+        "f10": pynput_keyboard.Key.f10,
+        "alt_l": pynput_keyboard.Key.alt_l,
+        "alt_r": pynput_keyboard.Key.alt_r,
+        "alt": pynput_keyboard.Key.alt_l,
+        "ctrl_l": pynput_keyboard.Key.ctrl_l,
+        "ctrl_r": pynput_keyboard.Key.ctrl_r,
+        "ctrl": pynput_keyboard.Key.ctrl_l,
+        "shift_l": pynput_keyboard.Key.shift_l,
+        "shift_r": pynput_keyboard.Key.shift_r,
+        "shift": pynput_keyboard.Key.shift_l,
     }
     if name in mapping:
         return mapping[name]
     if len(name) == 1:
-        return keyboard.KeyCode.from_char(name)
+        return pynput_keyboard.KeyCode.from_char(name)
     raise ValueError(f"Unsupported hotkey: {name}")
+
+
+def _normalize_hotkey_token_for_keyboard(token: str) -> str:
+    t = (token or "").strip().lower()
+    aliases = {
+        "control": "ctrl",
+        "ctl": "ctrl",
+        "cmd": "win",
+        "windows": "win",
+    }
+    t = aliases.get(t, t)
+
+    # Keep function keys and single characters as-is.
+    if len(t) == 1:
+        return t
+    if t.startswith("f") and t[1:].isdigit():
+        return t
+
+    mapping = {
+        "alt": "alt",
+        "alt_l": "left alt",
+        "alt_r": "right alt",
+        "ctrl": "ctrl",
+        "ctrl_l": "left ctrl",
+        "ctrl_r": "right ctrl",
+        "shift": "shift",
+        "shift_l": "left shift",
+        "shift_r": "right shift",
+    }
+    return mapping.get(t, t)
+
+
+def _normalize_hotkey_for_keyboard(name: str) -> str:
+    parts = [p.strip() for p in (name or "").split("+") if p.strip()]
+    if not parts:
+        raise ValueError("Empty hotkey")
+    return "+".join(_normalize_hotkey_token_for_keyboard(p) for p in parts)
+
+
+def _hotkey_contains_ctrl(name: str) -> bool:
+    tokens = [t.strip().lower() for t in (name or "").split("+") if t.strip()]
+    return any(tok in ("ctrl", "ctrl_l", "ctrl_r", "control", "ctl") for tok in tokens)
+
+
+def _is_modifier_key_name_for_keyboard(name: str) -> bool:
+    n = (name or "").strip().lower()
+    return n in {
+        "ctrl",
+        "left ctrl",
+        "right ctrl",
+        "shift",
+        "left shift",
+        "right shift",
+        "alt",
+        "left alt",
+        "right alt",
+        "win",
+        "left win",
+        "right win",
+        "left windows",
+        "right windows",
+    }
 
 
 # -------------------------
@@ -211,7 +282,8 @@ class VoiceInputWinClient:
         prompt: str | None = None,
         paste: bool = True,
         use_screenshot: bool = True,
-        hotkey: keyboard.Key | keyboard.KeyCode = keyboard.Key.f8,
+        hotkey: pynput_keyboard.Key | pynput_keyboard.KeyCode = pynput_keyboard.Key.f8,
+        hotkey_name: str = "ctrl_l+shift_l",
         overlay: bool = True,
     ):
         self.server_url = server_url
@@ -222,6 +294,7 @@ class VoiceInputWinClient:
         self.paste = paste
         self.use_screenshot = use_screenshot
         self.hotkey = hotkey
+        self.hotkey_name = hotkey_name
 
         self.recording = False
         self.audio_chunks: list[np.ndarray] = []
@@ -233,7 +306,17 @@ class VoiceInputWinClient:
 
         self._stream_timer: Optional[threading.Timer] = None
         self._ctrl_pressed = False
+        self._alt_pressed = False
         self._send_enter = True
+
+        # When the hotkey itself contains Ctrl, using Ctrl as the "no-enter"
+        # modifier no longer makes sense (it would always be pressed). In that
+        # case we switch the modifier to Alt.
+        self._no_enter_modifier = "alt" if _hotkey_contains_ctrl(self.hotkey_name) else "ctrl"
+
+        # Optional Windows hotkey backend that can suppress the key event so
+        # apps like Word won't see F8 (Word uses F8 for Extend Selection).
+        self._keyboard_backend = None
 
         self.hud = StatusHud(enabled=overlay)
 
@@ -247,7 +330,8 @@ class VoiceInputWinClient:
         print(f"  Screenshot: {'ON' if self.use_screenshot else 'OFF'}")
         print("")
         print(f"  [hold {self._hotkey_label()}]        → record → paste + Enter")
-        print(f"  [hold {self._hotkey_label()} + Ctrl] → record → paste only (no Enter)")
+        mod_label = "Alt" if self._no_enter_modifier == "alt" else "Ctrl"
+        print(f"  [hold {self._hotkey_label()} + {mod_label}] → record → paste only (no Enter)")
         print("  [Ctrl+C] → quit")
         print("")
 
@@ -257,7 +341,23 @@ class VoiceInputWinClient:
         ws_thread = threading.Thread(target=self._run_event_loop, daemon=True)
         ws_thread.start()
 
-        with keyboard.Listener(
+        # Prefer `keyboard` library if available, because it can suppress the
+        # key event (prevents Word's F8 Extend Selection and other app hotkeys).
+        if self._try_start_keyboard_backend():
+            return
+
+        # Fallback: pynput can monitor keys but cannot reliably suppress them.
+        if _is_combo_hotkey(self.hotkey_name):
+            print("  Error: Combo hotkeys (e.g. ctrl+shift) require the `keyboard` package.")
+            print("         Install it with: pip install keyboard")
+            return
+
+        print("  Hotkey backend: pynput (key is NOT suppressed)")
+        if self._hotkey_label() == "F8":
+            print("  Note: Microsoft Word uses F8 for Extend Selection.")
+            print("        If Word keeps selecting text, install `keyboard` (recommended) or use --hotkey f9.")
+
+        with pynput_keyboard.Listener(
             on_press=self._on_key_press,
             on_release=self._on_key_release,
         ) as listener:
@@ -267,6 +367,85 @@ class VoiceInputWinClient:
                 print("\nShutting down.")
             finally:
                 self.hud.stop()
+
+    def _try_start_keyboard_backend(self) -> bool:
+        """Start hotkey listener using the `keyboard` module if available.
+
+        Returns True if started (and this method blocks until exit).
+        """
+        try:
+            import keyboard as kb  # type: ignore
+        except Exception:
+            return False
+
+        try:
+            key_name = _normalize_hotkey_for_keyboard(self.hotkey_name)
+        except Exception:
+            return False
+
+        self._keyboard_backend = kb
+        print("  Hotkey backend: keyboard (suppressed)")
+
+        if self._no_enter_modifier == "alt":
+            print("  Note: Hotkey includes Ctrl, so 'paste without Enter' modifier is Alt.")
+
+        def _on_press() -> None:
+            if not self.recording:
+                self._start_recording()
+
+        def _on_release() -> None:
+            if not self.recording:
+                return
+            mod_pressed = bool(kb.is_pressed(self._no_enter_modifier))
+            self._send_enter = not mod_pressed
+            self._stop_recording()
+
+        combo_parts = [p.strip() for p in key_name.split("+") if p.strip()]
+        modifier_only_combo = len(combo_parts) > 1 and all(
+            _is_modifier_key_name_for_keyboard(p) for p in combo_parts
+        )
+
+        if modifier_only_combo:
+            combo_active = False
+
+            def _all_combo_pressed() -> bool:
+                return all(bool(kb.is_pressed(k)) for k in combo_parts)
+
+            def _combo_press(_event) -> None:
+                nonlocal combo_active
+                if combo_active:
+                    return
+                if _all_combo_pressed():
+                    combo_active = True
+                    _on_press()
+
+            def _combo_release(_event) -> None:
+                nonlocal combo_active
+                if not combo_active:
+                    return
+                if not _all_combo_pressed():
+                    _on_release()
+                    combo_active = False
+
+            for k in sorted(set(combo_parts)):
+                kb.on_press_key(k, _combo_press, suppress=True)
+                kb.on_release_key(k, _combo_release, suppress=True)
+        else:
+            kb.add_hotkey(key_name, _on_press, suppress=True, trigger_on_release=False)
+            kb.add_hotkey(key_name, _on_release, suppress=True, trigger_on_release=True)
+
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("\nShutting down.")
+        finally:
+            try:
+                kb.unhook_all()
+            except Exception:
+                pass
+            self.hud.stop()
+        return True
 
     def _run_event_loop(self) -> None:
         assert self.loop is not None
@@ -356,16 +535,21 @@ class VoiceInputWinClient:
         self.hud.update(stage, text)
 
     def _on_key_press(self, key) -> None:
-        if key in (keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
+        if key in (pynput_keyboard.Key.ctrl_l, pynput_keyboard.Key.ctrl_r):
             self._ctrl_pressed = True
+        if key in (pynput_keyboard.Key.alt_l, pynput_keyboard.Key.alt_r):
+            self._alt_pressed = True
         if key == self.hotkey and not self.recording:
             self._start_recording()
 
     def _on_key_release(self, key) -> None:
-        if key in (keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
+        if key in (pynput_keyboard.Key.ctrl_l, pynput_keyboard.Key.ctrl_r):
             self._ctrl_pressed = False
+        if key in (pynput_keyboard.Key.alt_l, pynput_keyboard.Key.alt_r):
+            self._alt_pressed = False
         if key == self.hotkey and self.recording:
-            self._send_enter = not self._ctrl_pressed
+            mod_pressed = self._alt_pressed if self._no_enter_modifier == "alt" else self._ctrl_pressed
+            self._send_enter = not mod_pressed
             self._stop_recording()
 
     def _start_recording(self) -> None:
@@ -576,23 +760,51 @@ class VoiceInputWinClient:
         if not self.paste:
             return
 
-        controller = keyboard.Controller()
+        # If we are using the `keyboard` backend (suppressed global hotkeys),
+        # the user's modifier keys can still be physically down at release time
+        # (e.g. Ctrl+Shift). Release modifiers first, then emit paste.
+        kb = self._keyboard_backend
+        if kb is not None:
+            try:
+                for key_name in (
+                    "left ctrl",
+                    "right ctrl",
+                    "ctrl",
+                    "left shift",
+                    "right shift",
+                    "shift",
+                    "left alt",
+                    "right alt",
+                    "alt",
+                ):
+                    try:
+                        kb.release(key_name)
+                    except Exception:
+                        pass
+
+                time.sleep(0.04)
+                kb.press_and_release("ctrl+v")
+                if send_enter:
+                    time.sleep(0.02)
+                    kb.press_and_release("enter")
+                return
+            except Exception:
+                # Fall back to pynput path below.
+                pass
+
+        controller = pynput_keyboard.Controller()
         time.sleep(0.03)
-        with controller.pressed(keyboard.Key.ctrl):
+        with controller.pressed(pynput_keyboard.Key.ctrl):
             controller.press("v")
             controller.release("v")
         if send_enter:
             time.sleep(0.02)
-            controller.press(keyboard.Key.enter)
-            controller.release(keyboard.Key.enter)
+            controller.press(pynput_keyboard.Key.enter)
+            controller.release(pynput_keyboard.Key.enter)
 
     def _hotkey_label(self) -> str:
-        hk = self.hotkey
-        if isinstance(hk, keyboard.Key):
-            return hk.name.upper() if hk.name else str(hk)
-        if isinstance(hk, keyboard.KeyCode):
-            return (hk.char or "?").upper()
-        return str(hk)
+        name = (self.hotkey_name or "").strip()
+        return name.upper() if name else "?"
 
 
 def main() -> None:
@@ -621,17 +833,31 @@ Example:
     parser.add_argument("--no-overlay", action="store_true", help="Disable the small status HUD")
     parser.add_argument(
         "--hotkey",
-        default="f8",
-        help="Hotkey name: f8|f9|f10|alt_l|alt_r|shift_l|shift_r or a single character (default: f8)",
+        default="f9",
+        help=(
+            "Hotkey name: f8|f9|f10|ctrl|ctrl_l|ctrl_r|shift|shift_l|shift_r|alt|alt_l|alt_r, "
+            "a single character, or a combo like ctrl+shift (default: f9)"
+        ),
     )
 
     args = parser.parse_args()
 
-    try:
-        hotkey = _parse_hotkey(args.hotkey)
-    except ValueError as e:
-        print(f"Error: {e}")
+    hotkey_name = (args.hotkey or "").strip().lower()
+    if not hotkey_name:
+        print("Error: --hotkey cannot be empty")
         sys.exit(2)
+
+    # Combo hotkeys are handled by the `keyboard` backend. We still parse
+    # single-key hotkeys for the pynput fallback.
+    hotkey: pynput_keyboard.Key | pynput_keyboard.KeyCode
+    if _is_combo_hotkey(hotkey_name):
+        hotkey = pynput_keyboard.Key.f8
+    else:
+        try:
+            hotkey = _parse_hotkey(hotkey_name)
+        except ValueError as e:
+            print(f"Error: {e}")
+            sys.exit(2)
 
     client = VoiceInputWinClient(
         server_url=args.server,
@@ -642,6 +868,7 @@ Example:
         paste=not args.no_paste,
         use_screenshot=not args.no_screenshot,
         hotkey=hotkey,
+        hotkey_name=hotkey_name,
         overlay=not args.no_overlay,
     )
     client.start()

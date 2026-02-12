@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-"""voice-input Mac client: Push-to-Talk → WebSocket → キーボード入力.
+"""voice-input Mac client：Push-to-Talk → WebSocket → 鍵盤輸入。
 
-使い方:
-  1. サーバー側: voice-input serve ws
-  2. Mac側:     python3 mac_client.py --server ws://YOUR_SERVER_IP:8991
+用法：
+    1. server 端：voice-input serve ws
+    2. Mac 端：  python3 mac_client.py --server ws://YOUR_SERVER_IP:8991
 
-操作:
-  右Option(Alt)キーを押し続ける → 録音
-  離す → サーバーに送信 → 整形テキストをペースト
+操作：
+    按住右 Option(Alt) 鍵 → 錄音
+    放開 → 傳送到 server → 貼上整理後文字
 
-依存 (Mac側):
-  pip3 install sounddevice numpy websockets pynput pyperclip
+依賴（Mac 端）：
+    pip3 install sounddevice numpy websockets pynput pyperclip
 
-macOS設定:
-  システム設定 > プライバシーとセキュリティ > マイク → ターミナルを許可
-  システム設定 > プライバシーとセキュリティ > アクセシビリティ → ターミナルを許可
+macOS 設定：
+    系統設定 > 隱私權與安全性 > 麥克風 → 允許 Terminal
+    系統設定 > 隱私權與安全性 > 輔助使用 → 允許 Terminal
 """
 
 from __future__ import annotations
@@ -41,14 +41,14 @@ from pynput import keyboard
 SAMPLE_RATE = 16000
 CHANNELS = 1
 DTYPE = "int16"
-HOTKEY = keyboard.Key.alt_l  # 左Optionキー
-STREAM_INTERVAL = 2.0  # ストリーミングチャンク送信間隔（秒）
-MIN_AX_TEXT_LEN = 20   # AXテキスト抽出の最小文字数（これ未満ならVisionフォールバック）
+HOTKEY = keyboard.Key.alt_l  # 左 Option 鍵
+STREAM_INTERVAL = 2.0  # 串流 chunk 傳送間隔（秒）
+MIN_AX_TEXT_LEN = 20   # AX 文字擷取的最小字數（少於此值就回退到 Vision）
 
-# --- ステータスオーバーレイ（フローティングHUD） ---
-# macOS PyObjC (AppKit) で画面下部にワイドなフローティングHUDを表示
-# 電光掲示板スタイル: partialテキストが次々に流れ込む
-# AppKitが無い環境ではosascript通知にフォールバック
+# --- 狀態覆蓋層（浮動 HUD） ---
+# 在 macOS 上用 PyObjC（AppKit）於螢幕底部顯示寬版浮動 HUD
+# 跑馬燈風格：partial 文字會持續流入
+# 若環境沒有 AppKit，則回退為 osascript 通知
 OVERLAY_SCRIPT = r'''
 import sys, threading, queue, time
 
@@ -64,7 +64,7 @@ TEXTS = {
     "error":             "\u274c Error",
 }
 
-# 表示テキストの最大文字数（超過分は先頭をカットして最新部分を表示）
+# 顯示文字最大長度（超過時會裁掉前段，只顯示最新尾端）
 MAX_DISPLAY_CHARS = 200
 
 try:
@@ -98,7 +98,7 @@ if not HAS_APPKIT:
             prev = stage
     sys.exit(0)
 
-# ---- PyObjC Floating HUD (画面下部バー) ----
+# ---- PyObjC Floating HUD（螢幕底部橫條） ----
 _cmd_queue = queue.Queue()
 _hud_window = None
 _hud_label = None
@@ -116,7 +116,7 @@ def _stdin_reader():
 _bg_green = False
 
 class _RoundedBG(NSView):
-    """角丸の半透明背景（通常ダーク、Vision完了で緑）."""
+    """圓角半透明背景（平時深色、Vision 完成時變綠）。"""
     def drawRect_(self, rect):
         if _bg_green:
             NSColor.colorWithCalibratedRed_green_blue_alpha_(0.08, 0.35, 0.12, 0.88).set()
@@ -127,11 +127,11 @@ class _RoundedBG(NSView):
         ).fill()
 
 class _Poller(NSObject):
-    """50msごとにstdinキューをチェック."""
+    """每 50ms 檢查一次 stdin 佇列。"""
     def tick_(self, timer):
         global _hud_visible, _hide_at
         now = time.time()
-        # done/error後に自動非表示
+        # done/error 後自動隱藏
         if _hide_at and now >= _hide_at:
             _hide_at = 0
             if _hud_window:
@@ -153,7 +153,7 @@ class _Poller(NSObject):
                 msg = parts[1].strip() if len(parts) > 1 else TEXTS.get(stage, stage)
                 _set_bg_color(stage)
                 if stage == "vision_ready":
-                    # 背景色だけ変える（テキストはそのまま）
+                    # 只改背景色（文字維持不變）
                     if _hud_bg:
                         _hud_bg.setNeedsDisplay_(True)
                     continue
@@ -164,7 +164,7 @@ class _Poller(NSObject):
             pass
 
 def _set_bg_color(stage):
-    """ステージに応じてHUD背景色を切り替え."""
+    """依 stage 切換 HUD 背景色。"""
     global _bg_green
     if stage == "vision_ready":
         _bg_green = True
@@ -174,9 +174,9 @@ def _set_bg_color(stage):
         _hud_bg.setNeedsDisplay_(True)
 
 def _show_hud(text):
-    """画面下部中央にHUDを表示（電光掲示板スタイル）."""
+    """在螢幕下方中央顯示 HUD（跑馬燈風格）。"""
     global _hud_visible
-    # 長文は末尾（最新部分）のみ表示
+    # 長文只顯示尾端（最新部分）
     if len(text) > MAX_DISPLAY_CHARS:
         text = "\u2026 " + text[-MAX_DISPLAY_CHARS:]
     scr = NSScreen.mainScreen().frame()
@@ -193,7 +193,7 @@ def _show_hud(text):
 def main():
     global _hud_window, _hud_label, _hud_bg
     app = NSApplication.sharedApplication()
-    app.setActivationPolicy_(2)  # Prohibited: Dockアイコン非表示
+    app.setActivationPolicy_(2)  # Prohibited：不顯示 Dock 圖示
 
     scr = NSScreen.mainScreen().frame()
     W = min(int(scr.size.width * 0.6), 900)
@@ -259,10 +259,10 @@ class VoiceInputClient:
         self._overlay_script_path = None
         self._stream_timer = None
         self._ctrl_pressed = False
-        self._send_enter = True  # Alt only → Enter付き, Alt+Ctrl → Enterなし
+        self._send_enter = True  # 只按 Alt → 會送 Enter；Alt+Ctrl → 不送 Enter
 
     def start(self):
-        """メインループを開始."""
+        """啟動主迴圈。"""
         print(f"voice-input client")
         print(f"  Server:   {self.server_url}")
         print(f"  Language: {self.language}")
@@ -270,20 +270,20 @@ class VoiceInputClient:
         print(f"  Paste:    {'clipboard+Cmd+V' if self.paste else 'clipboard only'}")
         print(f"  Screenshot: {'ON (context-aware)' if self.use_screenshot else 'OFF'}")
         print(f"")
-        print(f"  [左Alt長押し]        → 録音 → ペースト + Enter")
-        print(f"  [左Alt+Ctrl長押し]   → 録音 → ペーストのみ（Enterなし）")
-        print(f"  [Ctrl+C] → 終了")
+        print(f"  [按住左 Alt]        → 錄音 → 貼上 + Enter")
+        print(f"  [按住左 Alt+Ctrl]   → 錄音 → 只貼上（不送 Enter）")
+        print(f"  [Ctrl+C] → 結束")
         print()
 
-        # ステータスオーバーレイを起動
+        # 啟動狀態 HUD
         self._start_overlay()
 
-        # WebSocket接続をバックグラウンドで管理
+        # 在背景管理 WebSocket 連線
         self.loop = asyncio.new_event_loop()
         ws_thread = threading.Thread(target=self._run_event_loop, daemon=True)
         ws_thread.start()
 
-        # キーリスナーをメインスレッドで実行
+        # 在主執行緒啟動按鍵監聽
         with keyboard.Listener(
             on_press=self._on_key_press,
             on_release=self._on_key_release,
@@ -299,7 +299,7 @@ class VoiceInputClient:
         self.loop.run_until_complete(self._maintain_connection())
 
     async def _maintain_connection(self):
-        """WebSocket接続を維持（再接続あり）."""
+        """維持 WebSocket 連線（含自動重連）。"""
         while True:
             try:
                 async with websockets.connect(
@@ -311,7 +311,7 @@ class VoiceInputClient:
                     self._connected = True
                     print(f"  ✓ Connected to {self.server_url}")
 
-                    # 設定送信（スラッシュコマンド一覧を含む）
+                    # 傳送設定（包含 slash command 清單）
                     config_msg = {
                         "type": "config",
                         "language": self.language,
@@ -322,7 +322,7 @@ class VoiceInputClient:
                     }
                     await ws.send(json.dumps(config_msg))
 
-                    # サーバーからのメッセージを受信し続ける
+                    # 持續接收 server 訊息
                     async for msg in ws:
                         data = json.loads(msg)
                         self._handle_server_message(data)
@@ -335,7 +335,7 @@ class VoiceInputClient:
                 await asyncio.sleep(3)
 
     def _handle_server_message(self, data: dict):
-        """サーバーからの応答を処理."""
+        """處理 server 回應。"""
         msg_type = data.get("type", "")
 
         if msg_type == "status":
@@ -356,7 +356,7 @@ class VoiceInputClient:
                 self._update_overlay("matching_command")
 
         elif msg_type == "partial":
-            # Whisper生テキスト（LLM整形前）を即座にHUDに流す
+            # 立即把 Whisper 原始文字（尚未經 LLM 整理）送到 HUD
             raw = data.get("text", "")
             t_trans = data.get("transcribe_time", 0)
             if raw:
@@ -372,7 +372,7 @@ class VoiceInputClient:
             dur = data.get("duration", 0)
             is_slash = data.get("slash_command", False)
 
-            # スラッシュコマンドはEnter送信しない（確認用）
+            # Slash command 不送 Enter（方便確認）
             send_enter = False if is_slash else self._send_enter
 
             if is_slash:
@@ -392,19 +392,19 @@ class VoiceInputClient:
                 print("  → (empty - no speech detected)")
 
         elif msg_type == "config_ack":
-            pass  # 設定確認、表示不要
+            pass  # 設定確認，不需要顯示
 
         elif msg_type == "error":
             print(f"\n  ✗ Error: {data.get('message', 'unknown')}")
             self._update_overlay("error", f"\u2717 {data.get('message', 'Error')[:40]}")
 
     def _output_text(self, text: str, send_enter: bool = False):
-        """テキストをクリップボード経由でペースト.
+        """透過剪貼簿貼上文字。
 
-        send_enter=True の場合、ペースト後にReturnキーも送信する。
+        當 send_enter=True 時，貼上後也會送出 Return。
         """
         try:
-            # macOS pbcopy でクリップボードに設定
+            # 使用 macOS pbcopy 設定剪貼簿
             proc = subprocess.Popen(
                 ["pbcopy"],
                 stdin=subprocess.PIPE,
@@ -412,7 +412,7 @@ class VoiceInputClient:
             proc.communicate(text.encode("utf-8"))
 
             if self.paste:
-                # Cmd+V でペースト
+                # Cmd+V 貼上
                 time.sleep(0.05)
                 subprocess.run([
                     "osascript", "-e",
@@ -426,7 +426,7 @@ class VoiceInputClient:
                         'tell application "System Events" to key code 36'
                     ], check=True, capture_output=True)
         except FileNotFoundError:
-            # pbcopy がない環境（Linux等）→ pyperclip フォールバック
+            # 沒有 pbcopy 的環境（例如 Linux）→ 回退到 pyperclip
             try:
                 import pyperclip
                 pyperclip.copy(text)
@@ -435,23 +435,23 @@ class VoiceInputClient:
                 print(f"  [clipboard unavailable] {text}")
 
     def _on_key_press(self, key):
-        """キー押下時."""
+        """按鍵按下時。"""
         if key == keyboard.Key.ctrl_l or key == keyboard.Key.ctrl_r:
             self._ctrl_pressed = True
         if key == HOTKEY and not self.recording:
             self._start_recording()
 
     def _on_key_release(self, key):
-        """キー離し時."""
+        """按鍵放開時。"""
         if key == keyboard.Key.ctrl_l or key == keyboard.Key.ctrl_r:
             self._ctrl_pressed = False
         if key == HOTKEY and self.recording:
-            # Alt離し時にCtrlが押されていればEnter送信しない
+            # 放開 Alt 時若仍按住 Ctrl，則不送出 Enter
             self._send_enter = not self._ctrl_pressed
             self._stop_recording()
 
     def _start_recording(self):
-        """録音開始（ストリーミングモード: AXテキスト or スクリーンショット + 2秒ごとにチャンク送信）."""
+        """開始錄音（串流模式：AX 文字 or 截圖 + 每 2 秒送一次 chunk）。"""
         if not self._connected:
             print("  ✗ Not connected to server")
             return
@@ -461,17 +461,17 @@ class VoiceInputClient:
         print("  ● Recording...", end="", flush=True)
         self._update_overlay("recording")
 
-        # stream_start送信（AXテキスト優先、不十分ならスクリーンショット）
+        # 傳送 stream_start（優先 AX 文字，不足則使用截圖）
         start_msg = {"type": "stream_start"}
         if self.use_screenshot and self.ws and self._connected:
-            # AXテキスト抽出を試行
+            # 嘗試擷取 AX 文字
             ax_text, ax_app = self._extract_ax_text()
             if ax_text and len(ax_text) >= MIN_AX_TEXT_LEN:
                 start_msg["text_context"] = ax_text
                 app_label = f" [{ax_app}]" if ax_app else ""
                 print(f" +ax_text({len(ax_text)}ch){app_label}", end="", flush=True)
             else:
-                # AX不十分 → スクリーンショットにフォールバック
+                # AX 不足 → 回退到截圖
                 screenshot_b64 = self._capture_screenshot()
                 if screenshot_b64:
                     start_msg["screenshot"] = screenshot_b64
@@ -482,7 +482,7 @@ class VoiceInputClient:
             self.loop,
         )
 
-        # 録音開始
+        # 開始錄音
         self.stream = sd.InputStream(
             samplerate=SAMPLE_RATE,
             channels=CHANNELS,
@@ -492,24 +492,24 @@ class VoiceInputClient:
         )
         self.stream.start()
 
-        # ストリーミングタイマー開始（2秒ごとにチャンク送信）
+        # 啟動串流計時器（每 2 秒送一次 chunk）
         self._schedule_stream_timer()
 
     def _schedule_stream_timer(self):
-        """STREAM_INTERVAL秒後にチャンク送信をスケジュール."""
+        """在 STREAM_INTERVAL 秒後排程送出 chunk。"""
         self._stream_timer = threading.Timer(STREAM_INTERVAL, self._on_stream_tick)
         self._stream_timer.daemon = True
         self._stream_timer.start()
 
     def _on_stream_tick(self):
-        """定期的に累積音声をサーバーに送信."""
+        """定期把累積音訊送到 server。"""
         if not self.recording or not self.ws or not self._connected:
             return
         self._send_stream_chunk()
         self._schedule_stream_timer()
 
     def _send_stream_chunk(self):
-        """累積音声をWAVでサーバーに送信（ストリーミングチャンク）."""
+        """把累積音訊以 WAV 送到 server（串流 chunk）。"""
         if not self.audio_chunks:
             return
         audio_data = np.concatenate(self.audio_chunks)
@@ -523,13 +523,13 @@ class VoiceInputClient:
         )
 
     def _stop_stream_timer(self):
-        """ストリーミングタイマーを停止."""
+        """停止串流計時器。"""
         if self._stream_timer:
             self._stream_timer.cancel()
             self._stream_timer = None
 
     def _stop_recording(self):
-        """録音停止 → 最終チャンク送信 → stream_end."""
+        """停止錄音 → 傳送最後 chunk → stream_end。"""
         if not self.recording:
             return
 
@@ -567,7 +567,7 @@ class VoiceInputClient:
         print(f" ({len(wav_bytes) // 1024}KB)", end="", flush=True)
 
         if self.ws and self._connected:
-            # 最終音声を送信後にstream_end
+            # 送出最後音訊後再送 stream_end
             async def _send_final():
                 await self.ws.send(wav_bytes)
                 await self.ws.send(json.dumps({"type": "stream_end"}))
@@ -580,10 +580,10 @@ class VoiceInputClient:
 
     @staticmethod
     def _scan_slash_commands() -> list[dict]:
-        """~/.claude/skills/ からスラッシュコマンド一覧を収集."""
+        """從 ~/.claude/skills/ 收集 slash command 清單。"""
         from pathlib import Path
 
-        # Claude Code ビルトインコマンド
+        # Claude Code 內建指令
         commands = [
             {"name": "help", "description": "Show help information", "args": ""},
             {"name": "clear", "description": "Clear conversation history", "args": ""},
@@ -608,7 +608,7 @@ class VoiceInputClient:
                 text = skill_file.read_text(encoding="utf-8")
                 if not text.startswith("---"):
                     continue
-                # YAMLフロントマターをパース（---で囲まれた部分）
+                # 解析 YAML front matter（被 --- 包起來的區段）
                 end_idx = text.index("---", 3)
                 frontmatter = text[3:end_idx].strip()
                 meta = {}
@@ -632,11 +632,11 @@ class VoiceInputClient:
 
     @staticmethod
     def _capture_screenshot():
-        """macOS screencaptureでキーボードフォーカスウィンドウのスクリーンショットを取得しbase64で返す.
+        """用 macOS screencapture 擷取鍵盤焦點視窗的截圖並回傳 base64。
 
-        osascript (System Events) でフォーカスウィンドウの位置・サイズを取得し、
-        screencapture -R でその領域のみキャプチャ。
-        スレッドセーフ（subprocess経由）、追加パッケージ不要。
+        會用 osascript（System Events）取得焦點視窗的位置/尺寸，
+        再用 screencapture -R 只截取該區域。
+        走 subprocess，因此相對 thread-safe，且不需要額外套件。
         """
         import base64
         import tempfile
@@ -644,10 +644,10 @@ class VoiceInputClient:
 
         tmp_path = tempfile.mktemp(suffix=".png")
         try:
-            capture_args = ["screencapture", "-x", "-o"]  # -x=無音, -o=影なし
+            capture_args = ["screencapture", "-x", "-o"]  # -x=靜音，-o=不含陰影
             window_name = None
 
-            # osascriptでフォーカスウィンドウの位置・サイズを取得（thread-safe）
+            # 透過 osascript 取得焦點視窗的位置/尺寸（thread-safe）
             try:
                 r = subprocess.run(
                     ["osascript", "-e",
@@ -667,7 +667,7 @@ class VoiceInputClient:
             except Exception:
                 pass
 
-            # osascript失敗時: 全スクリーンにフォールバック
+            # osascript 失敗時：回退到全螢幕
             if "-R" not in capture_args:
                 capture_args.append("-C")
 
@@ -694,10 +694,10 @@ class VoiceInputClient:
 
     @staticmethod
     def _extract_ax_text() -> tuple[str | None, str | None]:
-        """macOS Accessibility APIでフォーカスウィンドウの表示テキストを抽出.
+        """用 macOS Accessibility API 擷取焦點視窗的顯示文字。
 
         Returns:
-            (text, app_name) — 成功時はテキストとアプリ名、失敗時は (None, None)
+            (text, app_name) — 成功時回傳文字與 app 名稱；失敗時回傳 (None, None)
         """
         MAX_DEPTH = 15
         MAX_ELEMENTS = 500
@@ -718,7 +718,7 @@ class VoiceInputClient:
             t0 = time.time()
             deadline = t0 + TIMEOUT_MS / 1000.0
 
-            # フォーカスアプリのPID取得
+            # 取得前景 app 的 PID
             frontmost = NSWorkspace.sharedWorkspace().frontmostApplication()
             if not frontmost:
                 return (None, None)
@@ -727,19 +727,19 @@ class VoiceInputClient:
 
             app_ref = AXUIElementCreateApplication(pid)
 
-            # フォーカスウィンドウ取得
+            # 取得前景視窗
             err, focused_window = AXUIElementCopyAttributeValue(
                 app_ref, "AXFocusedWindow", None
             )
             if err != 0 or focused_window is None:
                 return (None, None)
 
-            # テキスト抽出対象ロール
+            # 文字擷取目標 role
             text_roles = {
                 "AXStaticText", "AXTextField", "AXTextArea",
                 "AXLink", "AXHeading", "AXCell",
             }
-            # 再帰走査対象コンテナロール
+            # 遞迴走訪目標容器 role
             container_roles = {
                 "AXGroup", "AXScrollArea", "AXWebArea", "AXWindow",
                 "AXSplitGroup", "AXTabGroup", "AXList", "AXTable",
@@ -760,18 +760,18 @@ class VoiceInputClient:
 
                 element_count[0] += 1
 
-                # ロール取得
+                # 取得 role
                 err, role = AXUIElementCopyAttributeValue(element, "AXRole", None)
                 if err != 0 or role is None:
                     return
                 role = str(role)
 
-                # パスワードフィールドはスキップ
+                # 略過密碼欄位
                 err2, subrole = AXUIElementCopyAttributeValue(element, "AXSubrole", None)
                 if err2 == 0 and subrole and str(subrole) == "AXSecureTextField":
                     return
 
-                # テキスト要素からAXValue取得
+                # 從文字元素讀取 AXValue
                 if role in text_roles:
                     err_v, value = AXUIElementCopyAttributeValue(element, "AXValue", None)
                     if err_v == 0 and value and isinstance(value, str) and value.strip():
@@ -782,7 +782,7 @@ class VoiceInputClient:
                         if err_t == 0 and title and isinstance(title, str) and title.strip():
                             texts.append(title.strip())
 
-                # コンテナ or テキスト要素: 子を走査
+                # 容器或文字元素：走訪子節點
                 if role in container_roles or role in text_roles:
                     err_c, children = AXUIElementCopyAttributeValue(
                         element, "AXChildren", None
@@ -802,7 +802,7 @@ class VoiceInputClient:
 
             combined = "\n".join(texts)
             elapsed_ms = (time.time() - t0) * 1000
-            # 重複行を除去しつつ順序保持
+            # 去除重複行並保留順序
             seen = set()
             unique_lines = []
             for line in combined.split("\n"):
@@ -818,7 +818,7 @@ class VoiceInputClient:
             return (None, None)
 
     def _audio_callback(self, indata, frames, time_info, status):
-        """sounddevice録音コールバック."""
+        """sounddevice 錄音 callback。"""
         if status:
             print(f"\n  Audio warning: {status}", file=sys.stderr)
         if self.recording:
@@ -826,7 +826,7 @@ class VoiceInputClient:
 
     @staticmethod
     def _encode_wav(audio: np.ndarray) -> bytes:
-        """numpy配列をWAVバイト列にエンコード."""
+        """把 numpy 陣列編碼成 WAV 位元組。"""
         buf = io.BytesIO()
         with wave.open(buf, "wb") as wf:
             wf.setnchannels(CHANNELS)
@@ -835,10 +835,10 @@ class VoiceInputClient:
             wf.writeframes(audio.tobytes())
         return buf.getvalue()
 
-    # --- ステータスオーバーレイ管理 ---
+    # --- 狀態 HUD 管理 ---
 
     def _start_overlay(self):
-        """フローティングステータスオーバーレイを起動."""
+        """啟動浮動狀態 HUD。"""
         try:
             fd, path = tempfile.mkstemp(suffix=".py", prefix="voice_overlay_")
             with os.fdopen(fd, "w") as f:
@@ -857,7 +857,7 @@ class VoiceInputClient:
             self._overlay_proc = None
 
     def _update_overlay(self, stage: str, custom_msg: str | None = None):
-        """オーバーレイのステータスを更新."""
+        """更新 HUD 狀態。"""
         if not self._overlay_proc or not self._overlay_proc.stdin:
             return
         try:
@@ -871,7 +871,7 @@ class VoiceInputClient:
             self._overlay_proc = None
 
     def _hide_overlay(self):
-        """オーバーレイを非表示にする."""
+        """隱藏 HUD。"""
         if not self._overlay_proc or not self._overlay_proc.stdin:
             return
         try:
@@ -881,7 +881,7 @@ class VoiceInputClient:
             pass
 
     def _stop_overlay(self):
-        """オーバーレイプロセスを終了."""
+        """結束 HUD 程序。"""
         if self._overlay_proc:
             try:
                 self._overlay_proc.terminate()

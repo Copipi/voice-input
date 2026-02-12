@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""voice-input: Whisper文字起こし → Ollama LLM整形パイプライン.
+"""voice-input：Whisper 轉寫 → Ollama LLM 整理管線。
 
-RTX 3090上でfaster-whisper (large-v3-turbo) → gpt-oss:20b を連携し、
-音声ファイルから整形済みテキストを高速生成する。
+在 RTX 3090 上串接 faster-whisper（large-v3-turbo）→ gpt-oss:20b，
+用音訊檔快速產生已整理的文字。
 
-使い方:
-  voice-input audio.mp3                    # 文字起こし＋整形
-  voice-input audio.mp3 --raw              # 文字起こしのみ（整形なし）
-  voice-input audio.mp3 --model qwen3:30b  # 整形にqwen3を使用
-  voice-input audio.mp3 --prompt "議事録として整理して"  # カスタム指示
-  voice-input serve                        # HTTPサーバーモード
-  voice-input serve --port 8990            # ポート指定
+用法：
+    voice-input audio.mp3                    # 轉寫 + 整理
+    voice-input audio.mp3 --raw              # 只轉寫（不做 LLM 整理）
+    voice-input audio.mp3 --model qwen3:30b  # 用 qwen3 進行整理
+    voice-input audio.mp3 --prompt "整理成會議紀錄"  # 自訂指示
+    voice-input serve                        # HTTP server 模式
+    voice-input serve --port 8990            # 指定連接埠
 """
 
 import argparse
@@ -49,30 +49,30 @@ VISION_SERVERS = (
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 
-VISION_ANALYZE_PROMPT = """ユーザーが今入力しようとしているアクティブなタブ/ペインを特定し、その内容のテキストを読み取れ。
+VISION_ANALYZE_PROMPT = """請辨識使用者目前準備輸入文字的「前景」分頁/窗格，並讀出其中的文字內容。
 
-ルール:
-- 1行目: アプリ名とアクティブタブのタイトル
-- アクティブタブ/ペインの本文テキストをそのまま正確に書き写せ（省略するな）
-- 非アクティブなタブ、サイドバー、ツールバー、アイコン、UIの説明は一切不要
-- カーソル/入力欄がある場合、その位置と周辺テキストを明記せよ
-- テキスト量を最大化せよ。装飾や構造化は不要"""
+規則：
+- 第 1 行：應用程式名稱與前景分頁標題
+- 將前景分頁/窗格的正文文字原樣、完整抄寫（不要省略）
+- 不需要非前景分頁、側邊欄、工具列、圖示或 UI 描述
+- 若有游標/輸入框，請標明位置與周邊文字
+- 以最大化文字量為目標；不需要裝飾或結構化"""
 
-# --- 言語別プロンプト ---
+# --- 依語言的提示詞 ---
 _prompt_cache: dict[str, dict] = {}
 
 
 def _load_prompt(lang: str) -> dict:
-    """言語コードに対応するプロンプトをロード（キャッシュ付き）."""
+    """載入語言碼對應的提示詞（含快取）。"""
     if lang in _prompt_cache:
         return _prompt_cache[lang]
 
-    # 言語コード正規化 (e.g., "ja-JP" → "ja", "zh-cn" → "zh")
+    # 語言碼正規化（例如："ja-JP" → "ja"、"zh-cn" → "zh"）
     lang_base = lang.split("-")[0].lower() if lang else DEFAULT_LANGUAGE
 
     prompt_file = PROMPTS_DIR / f"{lang_base}.json"
     if not prompt_file.exists():
-        # フォールバック: en → ja
+        # 回退：en → DEFAULT_LANGUAGE
         for fallback in ("en", DEFAULT_LANGUAGE):
             prompt_file = PROMPTS_DIR / f"{fallback}.json"
             if prompt_file.exists():
@@ -101,7 +101,7 @@ def _resolve_whisper_download_root() -> Path:
 
 
 def _get_whisper_model():
-    """Whisperモデルをシングルトンで取得（初回のみロード）."""
+    """以 singleton 方式取得 Whisper model（僅首次載入）。"""
     global _whisper_model
     if _whisper_model is None:
         from faster_whisper import WhisperModel
@@ -126,7 +126,7 @@ def _get_whisper_model():
 
 def transcribe(audio_path: str, language: str | None = None,
                vad_filter: bool = True) -> dict:
-    """Whisperで音声を文字起こしする."""
+    """使用 Whisper 將音訊轉寫成文字。"""
     t0 = time.time()
     model = _get_whisper_model()
     load_time = time.time() - t0
@@ -159,11 +159,11 @@ def transcribe(audio_path: str, language: str | None = None,
 
 
 def analyze_screenshot(screenshot_b64: str, vision_model: str = VISION_MODEL) -> dict:
-    """スクリーンショットからコンテキストを判定する.
+    """從截圖判定情境。
 
-    VISION_SERVERS で指定されたサーバーに順番に試行。
-    ローカルOllamaの場合は keep_alive=0 でVRAMを即解放する。
-    instruct版モデル（qwen3-vl:8b-instruct）で直接contentに出力。
+    會依序嘗試 `VISION_SERVERS` 指定的 server。
+    若是本機 Ollama，會用 `keep_alive=0` 讓 VRAM 盡快釋放。
+    instruct 類模型（qwen3-vl:8b-instruct）會直接輸出到 message.content。
     """
     import logging
     import requests
@@ -224,7 +224,7 @@ def refine_with_llm(
     custom_prompt: str | None = None,
     context_hint: str | None = None,
 ) -> dict:
-    """Ollama APIでテキストを整形する（言語別プロンプト使用）."""
+    """透過 Ollama API 整理文字（使用依語言提示詞）。"""
     import requests
 
     prompt_data = _load_prompt(language)
@@ -237,7 +237,7 @@ def refine_with_llm(
         prefix = prompt_data.get("custom_prompt_prefix", "Additional instructions:")
         system_prompt = f"{system_prompt}\n\n{prefix} {custom_prompt}"
 
-    # Few-shot examples + テンプレートで「整形タスク」であることを明示
+    # Few-shot examples + 模板，明確指定這是「整理任務」
     messages = [{"role": "system", "content": system_prompt}]
     for shot in prompt_data.get("few_shot", []):
         messages.append({"role": "user", "content": shot["user"]})
@@ -284,7 +284,7 @@ def refine_with_llm(
     }
 
 
-# --- スラッシュコマンド検出・マッチング ---
+# --- Slash command 偵測/匹配 ---
 
 SLASH_PREFIXES = [
     r"^コマンド[&＆\s]*",                     # Japanese "command" (primary)
@@ -293,10 +293,10 @@ SLASH_PREFIXES = [
 
 
 def detect_slash_prefix(raw_text: str) -> tuple[bool, str]:
-    """raw_textがスラッシュコマンドプレフィックスで始まるか検出.
+    """偵測 raw_text 是否以 slash command 前綴開頭。
 
     Returns:
-        (is_slash, remaining_text) — プレフィックス検出時はTrue + 残りのテキスト
+        (is_slash, remaining_text) — 偵測到前綴時回傳 True 與剩餘文字
     """
     text = raw_text.strip()
     for pattern in SLASH_PREFIXES:
@@ -312,7 +312,7 @@ def match_slash_command(
     model: str = DEFAULT_MODEL,
     language: str = DEFAULT_LANGUAGE,
 ) -> dict:
-    """発話テキストをスラッシュコマンドにLLMマッチング.
+    """用 LLM 將口述文字匹配成 slash command。
 
     Returns:
         {"matched": True/False, "command": "/name args", "match_time": float}
@@ -326,29 +326,29 @@ def match_slash_command(
         for c in commands
     )
 
-    system_prompt = f"""あなたは音声コマンドマッチャーです。ユーザーが音声で話した内容を、以下のコマンド一覧から最も適切なコマンドにマッチングしてください。
+    system_prompt = f"""你是語音指令匹配器。請把使用者口述的內容，從下列指令清單中匹配到最合適的指令。
 
-コマンド一覧:
+指令清單：
 {cmd_list}
 
-ルール:
-1. 入力テキストからコマンド名と引数を特定する
-2. 出力は「/コマンド名 引数」の形式のみ（説明やコメントは一切不要）
-3. コマンド名が音声で不明瞭な場合、最も近いコマンドを選ぶ
-4. 引数が話されていればそのまま含める（数字、URL、キーワード等）
-5. 引数がなければコマンド名のみ出力
-6. どのコマンドにもマッチしない場合は「NO_MATCH」とだけ出力
-7. カタカナの技術用語は本来の英字表記に戻す（イシュー→issue、リサーチ→research、レジューム→resume、コミット→commit等）
+規則：
+1. 從輸入文字找出指令名稱與參數
+2. 輸出只能是「/指令名 參數」格式（不要任何說明或評論）
+3. 若指令名因口述不清楚，選擇最接近的指令
+4. 若有口述參數就原樣包含（數字、URL、關鍵字等）
+5. 沒有參數就只輸出指令名
+6. 若無法匹配任何指令，只輸出「NO_MATCH」
+7. 技術用語若被口述成外來語/音譯，請還原為常見英文拼寫（例如：issue、research、resume、commit 等）
 
-例:
-- 「イシュートゥーピーアール 123」→ /issue-to-pr 123
-- 「リサーチトゥーイシュー 認証周りの問題」→ /research-to-issue 認証周りの問題
-- 「レジュームセッション 30分」→ /resume-session 30m
-- 「ヘルプ」→ /help
-- 「コミット」→ /commit
-- 「ピーディーエフ」→ /pdf
-- 「コンパクト」→ /compact
-- 「イシュートゥーピーアール ナンバー45 スキップレビュー」→ /issue-to-pr 45 --skip-review"""
+例：
+- "issue to pr 123" → /issue-to-pr 123
+- "research to issue authentication problems" → /research-to-issue authentication problems
+- "resume session 30 minutes" → /resume-session 30m
+- "help" → /help
+- "commit" → /commit
+- "pdf" → /pdf
+- "compact" → /compact
+- "issue to pr number 45 skip review" → /issue-to-pr 45 --skip-review"""
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -371,7 +371,7 @@ def match_slash_command(
     match_time = time.time() - t0
 
     result_text = data["message"]["content"].strip()
-    # 複数行の場合は1行目のみ
+    # 若有多行，只取第一行
     result_text = result_text.split("\n")[0].strip()
 
     if result_text == "NO_MATCH" or not result_text.startswith("/"):
@@ -389,7 +389,7 @@ def process_audio(
     output_format: str = "text",
     quiet: bool = False,
 ) -> dict:
-    """音声ファイルを文字起こし＋整形する完全パイプライン."""
+    """完整管線：音訊檔轉寫 + 整理。"""
     if not quiet:
         print(f"[1/2] Transcribing: {audio_path}", file=sys.stderr)
 
@@ -540,7 +540,7 @@ class VoiceInputHandler(BaseHTTPRequestHandler):
 
 
 def serve(host: str, port: int):
-    """HTTPサーバーを起動."""
+    """啟動 HTTP server。"""
     server = HTTPServer((host, port), VoiceInputHandler)
     print(f"voice-input server listening on http://{host}:{port}", file=sys.stderr)
     print(f"  POST /transcribe  - Upload audio for transcription", file=sys.stderr)
@@ -559,9 +559,9 @@ def serve(host: str, port: int):
 def main():
     # "serve" subcommand detection
     if len(sys.argv) >= 2 and sys.argv[1] == "serve":
-        # "serve ws" → WebSocketサーバー
+        # "serve ws" → WebSocket server
         if len(sys.argv) >= 3 and sys.argv[2] == "ws":
-            parser = argparse.ArgumentParser(description="voice-input WebSocketサーバー")
+            parser = argparse.ArgumentParser(description="voice-input WebSocket server")
             parser.add_argument("_cmd", metavar="serve")
             parser.add_argument("_mode", metavar="ws")
             parser.add_argument("--host", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")
@@ -572,8 +572,8 @@ def main():
             asyncio.run(ws_main(args.host, args.port))
             return
 
-        # "serve" → HTTPサーバー
-        parser = argparse.ArgumentParser(description="voice-input HTTPサーバー")
+        # "serve" → HTTP server
+        parser = argparse.ArgumentParser(description="voice-input HTTP server")
         parser.add_argument("_cmd", metavar="serve")
         parser.add_argument("--host", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")
         parser.add_argument("--port", type=int, default=8990, help="Port (default: 8990)")
@@ -582,16 +582,16 @@ def main():
         return
 
     parser = argparse.ArgumentParser(
-        description="voice-input: 音声 → Whisper文字起こし → LLM整形",
+                description="voice-input: 音訊 → Whisper 轉寫 → LLM 整理",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  voice-input meeting.mp3                          # 文字起こし＋整形
-  voice-input meeting.mp3 --raw                    # Whisperのみ
-  voice-input meeting.mp3 --model qwen3:30b        # Qwen3で整形
-  voice-input meeting.mp3 --prompt "箇条書きで"     # カスタム指示
+    voice-input meeting.mp3                          # 轉寫 + 整理
+    voice-input meeting.mp3 --raw                    # 只跑 Whisper
+    voice-input meeting.mp3 --model qwen3:30b        # 用 Qwen3 整理
+    voice-input meeting.mp3 --prompt "用條列整理"     # 自訂指示
   voice-input meeting.mp3 --output json            # JSON出力
-  voice-input serve --port 8990                    # HTTPサーバー
+    voice-input serve --port 8990                    # HTTP server
         """,
     )
     parser.add_argument("audio", help="Audio file path")

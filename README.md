@@ -140,7 +140,9 @@ setx LLM_MODEL gemma3:4b
 .venv\Scripts\python win_client.py --server ws://localhost:8991 --model gemma3:4b
 ```
 
-Default push-to-talk hotkey is **F8** (hold to record, release to paste). Use `--hotkey alt_l` if you want Left Alt.
+Default push-to-talk hotkey is **F9** (hold to record, release to paste). Use `--hotkey alt_l` if you want Left Alt.
+
+Note: Microsoft Word uses **F8** for "Extend Selection". If Word selects text / overwrites previous paste, install `keyboard` (`pip install keyboard`) so the client can suppress the hotkey, or switch to `--hotkey f9`.
 
 ## Usage
 
@@ -275,10 +277,10 @@ Whisper auto-detects CUDA/CPU. On CUDA, uses float16; on CPU, uses int8.
 <details>
 <summary>Voice slash commands (Claude Code)</summary>
 
-Say "コマンド" followed by a command name to input a slash command:
+說「command」再接著說指令名稱，即可輸入 slash command：
 
-- 「コマンド ヘルプ」→ `/help`
-- 「コマンド コミット」→ `/commit`
+- "command help" → `/help`
+- "command commit" → `/commit`
 - "command compact" → `/compact`
 
 Commands auto-loaded from `~/.claude/skills/*/SKILL.md` at startup.
@@ -291,56 +293,56 @@ Cloud voice input sends your audio and screen to external servers. This tool run
 
 ---
 
-## 日本語ガイド
+## 中文指南（正體）
 
-### これは何？
+### 這是什麼？
 
-Macのプッシュトゥートークで音声入力し、Whisperで文字起こし、ローカルLLMで整形するツールです。クラウドサービス不要、音声もスクリーンデータもネットワーク外に出ません。
+這是一個在 Mac 上用按住說話（Push-to-talk）進行語音輸入，透過 Whisper 轉寫，再用本機 LLM 整理文字的工具。不需要雲端服務，語音與螢幕資料都不會離開你的電腦。
 
-### MacBook (16 GB) でのセットアップ
+### MacBook（16 GB）安裝/設定
 
-**必要なもの:**
+**需要準備：**
 - Apple Silicon Mac (M1/M2/M3/M4, 16 GB以上)
 - Python 3.11+
 - [Ollama](https://ollama.com/)
 
-**手順:**
+**步驟：**
 
 ```bash
-# クローン＆セットアップ
+# 下載並初始化
 git clone https://github.com/xuiltul/voice-input
 cd voice-input
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ollama pull gemma3:4b
 
-# サーバー起動（ターミナル1）
+# 啟動 server（終端機 1）
 WHISPER_MODEL=small LLM_MODEL=gemma3:4b .venv/bin/python ws_server.py
 
-# クライアント起動（ターミナル2）
+# 啟動 client（終端機 2）
 .venv/bin/python mac_client.py --server ws://localhost:8991 --model gemma3:4b
 ```
 
-**macOSの権限設定** — システム設定 > プライバシーとセキュリティ:
-- マイク → Terminal
-- アクセシビリティ → Terminal
-- 画面収録 → Terminal
+**macOS 權限設定** — 系統設定 > 隱私權與安全性：
+- 麥克風 → Terminal
+- 輔助使用 → Terminal
+- 螢幕錄製 → Terminal
 
-### 使い方
+### 使用方式
 
-- **左Optionキーを押しながら話す** → 離すと文字起こし → 整形 → 自動ペースト＋Enter
-- **左Option + Ctrl を押しながら話す** → ペーストのみ（Enter送信なし）
+- **按住左 Option 鍵說話** → 放開後轉寫 → 整理 → 自動貼上 + Enter
+- **按住左 Option + Ctrl 說話** → 只貼上（不送出 Enter）
 
-### メモリ使用量
+### 記憶體用量
 
-| コンポーネント | メモリ |
+| 元件 | 記憶體 |
 |------------|--------|
 | macOS | ~5 GB |
 | Whisper small (CPU) | ~1 GB |
 | gemma3:4b (Ollama) | ~3 GB |
 | **合計** | **~9 GB** |
 
-32 GB以上のMacでは `WHISPER_MODEL=large-v3-turbo LLM_MODEL=qwen2.5:7b` でより高精度になります。
+在 32 GB 以上的 Mac 上，使用 `WHISPER_MODEL=large-v3-turbo LLM_MODEL=qwen2.5:7b` 會更精準。
 
 ## License
 

@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
 """voice-input WebSocket server.
 
-Mac等のクライアントから音声データ（+スクリーンショット）を受信し、
-Whisper文字起こし → コンテキスト判定 → LLM整形 → テキスト返却する。
+從 Mac 等 client 接收音訊資料（+ 截圖），
+Whisper 轉寫 → 判定情境 → LLM 整理 → 回傳文字。
 
 Protocol:
-  Client → Server: JSON制御メッセージ or バイナリ音声データ
-  Server → Client: JSON応答
+    Client → Server: JSON 控制訊息 or 二進位音訊資料
+    Server → Client: JSON 回應
 
-ストリーミングモード（推奨）:
+串流模式（建議）:
   1. Client: {"type": "stream_start", "screenshot": "<base64>"}  ← 録音開始
-  2. Server: Vision分析を即座に開始
-  3. Client: バイナリ音声データ（2秒ごとに累積WAV送信）
-  4. Server: {"type": "partial", "text": "..."}  ← 逐次文字起こし結果
-  5. Client: 最終バイナリ音声データ → {"type": "stream_end"}
+    2. Server: 立即開始 Vision 分析
+    3. Client: 二進位音訊資料（每 2 秒送出累積 WAV）
+    4. Server: {"type": "partial", "text": "..."}  ← 即時轉寫結果
+    5. Client: 最後一包二進位音訊資料 → {"type": "stream_end"}
   6. Server: LLM整形 → {"type": "result", "text": "..."}
 
-レガシーモード:
+傳統模式（legacy）:
   1. Client: {"type": "audio_with_screenshot", "screenshot": "<base64>"}
-  2. Client: バイナリ音声データ（録音完了後に一括送信）
+    2. Client: 二進位音訊資料（錄音結束後一次送出）
   3. Server: transcribe → refine → {"type": "result"}
 """
 
@@ -50,19 +50,19 @@ logging.basicConfig(
 )
 log = logging.getLogger("ws_server")
 
-# Vision contextの最大文字数
+# Vision 情境文字最大長度
 MAX_CONTEXT_LEN = 2000
 
-# クライアント別設定
+# 各 client 的設定
 client_configs: dict[str, dict] = {}
 
-# レガシーモード用（audio_with_screenshot + binary）
+# 傳統模式用（audio_with_screenshot + binary）
 pending_vision_tasks: dict[str, asyncio.Task] = {}
 vision_start_times: dict[str, float] = {}
 
 
 class StreamState:
-    """ストリーミングモードのクライアント状態."""
+    """串流模式的 client 狀態。"""
     __slots__ = (
         "active", "latest_audio", "latest_text", "vision_task",
         "vision_start", "processing", "has_newer", "vision_notified",
@@ -75,17 +75,17 @@ class StreamState:
         self.latest_text = ""
         self.vision_task: asyncio.Task | None = None
         self.vision_start = 0.0
-        self.processing = False  # Whisperが実行中か
-        self.has_newer = False   # 処理中に新しい音声が到着したか
-        self.vision_notified = False  # Vision完了通知済みか
-        self.text_context: str | None = None  # AXテキスト抽出結果
+        self.processing = False  # Whisper 是否正在執行
+        self.has_newer = False   # 處理中是否收到更新的音訊
+        self.vision_notified = False  # 是否已通知 Vision 完成
+        self.text_context: str | None = None  # AX 文字擷取結果
 
 
 stream_states: dict[str, StreamState] = {}
 
 
 async def handle_client(websocket):
-    """WebSocketクライアントを処理."""
+    """處理 WebSocket client。"""
     addr = websocket.remote_address
     client_id = f"{addr[0]}:{addr[1]}"
     log.info(f"Client connected: {client_id}")
@@ -120,7 +120,7 @@ async def handle_client(websocket):
                     if "slash_commands" in data:
                         cfg["slash_commands"] = data["slash_commands"]
                         log.info(f"Loaded {len(data['slash_commands'])} slash commands for {client_id}")
-                    # config_ackにはslash_commandsを含めない（大きいため）
+                    # config_ack 不包含 slash_commands（內容可能很大）
                     ack = {k: v for k, v in cfg.items() if k != "slash_commands"}
                     await send_json(websocket, {"type": "config_ack", **ack})
                     log.info(f"Config updated for {client_id}: {ack}")
@@ -132,7 +132,7 @@ async def handle_client(websocket):
                     await handle_stream_end(websocket, client_id)
 
                 elif msg_type == "audio_with_screenshot":
-                    # レガシーモード: 録音開始時のスクリーンショット送信
+                    # 傳統模式：錄音開始時送出截圖
                     screenshot_b64 = data.get("screenshot", "")
                     if screenshot_b64:
                         cfg = client_configs.get(client_id, {})
@@ -151,10 +151,10 @@ async def handle_client(websocket):
 
             elif isinstance(message, bytes):
                 if state.active:
-                    # ストリーミングモード: 逐次チャンク
+                    # 串流模式：逐次 chunk
                     await handle_stream_chunk(websocket, client_id, message)
                 else:
-                    # レガシーモード: 録音完了後の一括送信
+                    # 傳統模式：錄音結束後一次送出
                     vision_task = pending_vision_tasks.pop(client_id, None)
                     vision_start = vision_start_times.pop(client_id, None)
                     await handle_audio(websocket, client_id, message,
@@ -164,11 +164,11 @@ async def handle_client(websocket):
         log.info(f"Client disconnected: {client_id}")
     finally:
         client_configs.pop(client_id, None)
-        # ストリーミング状態のクリーンアップ
+        # 清理串流狀態
         st = stream_states.pop(client_id, None)
         if st and st.vision_task and not st.vision_task.done():
             st.vision_task.cancel()
-        # レガシー状態のクリーンアップ
+        # 清理傳統模式狀態
         task = pending_vision_tasks.pop(client_id, None)
         if task and not task.done():
             task.cancel()
@@ -176,11 +176,11 @@ async def handle_client(websocket):
 
 
 # =============================================================================
-#  ストリーミングモード
+#  串流模式
 # =============================================================================
 
 async def handle_stream_start(websocket, client_id: str, data: dict):
-    """ストリーミング開始: text_context優先、なければVision分析を非同期起動."""
+    """串流開始：優先使用 text_context，否則非同步啟動 Vision 分析。"""
     state = stream_states[client_id]
     state.active = True
     state.latest_audio = None
@@ -190,19 +190,19 @@ async def handle_stream_start(websocket, client_id: str, data: dict):
     state.vision_notified = False
     state.text_context = None
 
-    # 前回のvisionタスクが残っていればキャンセル
+    # 若上一個 vision 任務仍存在則取消
     if state.vision_task and not state.vision_task.done():
         state.vision_task.cancel()
         log.info(f"Cancelled previous vision task for {client_id}")
 
     cfg = client_configs.get(client_id, {})
 
-    # 優先順位: text_context > screenshot > なし
+    # 優先順序：text_context > screenshot > 無
     text_context = data.get("text_context", "")
     screenshot_b64 = data.get("screenshot", "")
 
     if text_context and not cfg.get("raw", False):
-        # AXテキスト抽出成功 → Vision不要、即座にコンテキスト確定
+        # AX 文字擷取成功 → 不需要 Vision，情境可立即確定
         if len(text_context) > MAX_CONTEXT_LEN:
             text_context = text_context[:MAX_CONTEXT_LEN] + "..."
         state.text_context = text_context
@@ -210,10 +210,10 @@ async def handle_stream_start(websocket, client_id: str, data: dict):
         log.info(f"Stream started for {client_id} "
                  f"(text_context: {len(text_context)} chars)")
         await send_json(websocket, {"type": "stream_ack"})
-        # AXテキストは即座に利用可能なのでvision_readyを即通知
+        # AX 文字可立即使用，直接通知 vision_ready
         await send_json(websocket, {"type": "status", "stage": "vision_ready"})
     elif screenshot_b64 and not cfg.get("raw", False):
-        # スクリーンショット → 従来通りVision非同期起動
+        # 截圖 → 維持原本行為：非同步啟動 Vision
         loop = asyncio.get_event_loop()
         state.vision_start = time.time()
         state.vision_task = asyncio.ensure_future(
@@ -229,7 +229,7 @@ async def handle_stream_start(websocket, client_id: str, data: dict):
 
 
 async def handle_stream_chunk(websocket, client_id: str, audio_data: bytes):
-    """ストリーミング中の音声チャンクを処理."""
+    """處理串流中的音訊 chunk。"""
     state = stream_states.get(client_id)
     if not state or not state.active:
         return
@@ -239,17 +239,17 @@ async def handle_stream_chunk(websocket, client_id: str, audio_data: bytes):
     log.info(f"Stream chunk from {client_id}: {size_kb:.0f}KB")
 
     if state.processing:
-        # Whisper実行中 → 新しい音声が来たことをマーク
+        # Whisper 執行中 → 標記已收到更新音訊
         state.has_newer = True
         return
 
-    # Whisper開始
+    # 開始 Whisper
     state.processing = True
     asyncio.create_task(_stream_whisper_loop(websocket, client_id))
 
 
 async def _stream_whisper_loop(websocket, client_id: str):
-    """ストリーミングWhisperループ: 最新の音声を処理し続ける."""
+    """串流 Whisper 迴圈：持續處理最新音訊。"""
     state = stream_states.get(client_id)
     if not state:
         return
@@ -267,7 +267,7 @@ async def _stream_whisper_loop(websocket, client_id: str):
 
         try:
             t0 = time.time()
-            # ストリーミング中はVAD無効（短いチャンクだとVADが全削除する）
+            # 串流時停用 VAD（chunk 太短時 VAD 可能把內容全部濾掉）
             result = await loop.run_in_executor(
                 None, lambda: transcribe(tmp_path, cfg.get("language"),
                                          vad_filter=False)
@@ -288,7 +288,7 @@ async def _stream_whisper_loop(websocket, client_id: str):
         finally:
             Path(tmp_path).unlink(missing_ok=True)
 
-        # Vision完了を通知（一度だけ）
+        # 通知 Vision 完成（只做一次）
         if (state.vision_task and state.vision_task.done()
                 and not state.vision_notified):
             state.vision_notified = True
@@ -301,14 +301,14 @@ async def _stream_whisper_loop(websocket, client_id: str):
             except Exception:
                 pass
 
-        # 処理中に新しい音声が届いていたら再度処理
+        # 若處理期間收到更新音訊則再次處理
         if not state.has_newer or not state.active:
             state.processing = False
             break
 
 
 async def handle_stream_end(websocket, client_id: str):
-    """ストリーミング終了: 最終Whisper結果でLLM整形."""
+    """串流結束：使用最終 Whisper 結果做 LLM 整理。"""
     state = stream_states.get(client_id)
     if not state:
         return
@@ -316,13 +316,13 @@ async def handle_stream_end(websocket, client_id: str):
     state.active = False
     log.info(f"Stream end for {client_id}")
 
-    # 実行中のWhisperが終わるのを待つ
+    # 等待正在執行的 Whisper 結束
     while state.processing:
         await asyncio.sleep(0.05)
 
     cfg = client_configs.get(client_id, {})
 
-    # 最終音声をVAD有効で再処理し、VADが全除外した場合はVAD無効で再試行
+    # 最終音訊先用 VAD 重新處理；若 VAD 全部濾掉則改用停用 VAD 再試一次
     raw_text = ""
     transcribe_time = 0
     duration = 0
@@ -346,8 +346,8 @@ async def handle_stream_end(websocket, client_id: str):
                      f"{len(raw_text)} chars in {transcribe_time:.1f}s "
                      f"(lang={detected_lang})")
 
-            # VADが全除外してストリーミングpartialにはテキストがある場合
-            # → VAD無効で再処理（VADの誤検出対策）
+            # 若 VAD 全濾掉但串流 partial 有文字
+            # → 停用 VAD 再處理（避免 VAD 誤判）
             if not raw_text.strip() and state.latest_text.strip():
                 log.warning(f"VAD filtered all speech, retrying without VAD "
                             f"(partial had: {state.latest_text[:60]})")
@@ -364,7 +364,7 @@ async def handle_stream_end(websocket, client_id: str):
                          f"{len(raw_text)} chars")
         except Exception as e:
             log.error(f"Final transcribe error: {e}")
-            # フォールバック: ストリーミング中のpartialテキストを使う
+            # 回退：使用串流期間的 partial 文字
             raw_text = state.latest_text
             log.info(f"Falling back to partial text: {raw_text[:60]}")
         finally:
@@ -380,11 +380,11 @@ async def handle_stream_end(websocket, client_id: str):
         })
         return
 
-    # コンテキスト解決: text_context優先、なければVision結果
+    # 情境來源：優先 text_context，否則使用 Vision 結果
     context_hint = ""
     analysis_time = 0
     if state.text_context:
-        # AXテキスト抽出結果をそのまま使用（即座、GPU不要）
+        # 直接使用 AX 文字擷取結果（立即可用、不需要 GPU）
         context_hint = state.text_context
         log.info(f"Using text_context ({len(context_hint)} chars)")
     elif state.vision_task:
@@ -403,7 +403,7 @@ async def handle_stream_end(websocket, client_id: str):
             elapsed = time.time() - state.vision_start if state.vision_start else 0
             log.info(f"Vision not ready ({elapsed:.0f}s elapsed), proceeding without context")
 
-    # スラッシュコマンド検出
+    # Slash command 偵測
     slash_commands = cfg.get("slash_commands", [])
     if slash_commands and raw_text.strip():
         is_slash, remaining = detect_slash_prefix(raw_text)
@@ -444,7 +444,7 @@ async def handle_stream_end(websocket, client_id: str):
             except Exception as e:
                 log.error(f"Slash command match error: {e}")
 
-    # LLM整形
+    # LLM 整理
     refined_text = raw_text
     refine_time = 0
 
@@ -484,13 +484,13 @@ async def handle_stream_end(websocket, client_id: str):
 
 
 # =============================================================================
-#  レガシーモード（stream_start/stream_end非対応クライアント用）
+#  傳統模式（給不支援 stream_start/stream_end 的 client）
 # =============================================================================
 
 async def handle_audio(websocket, client_id: str, audio_data: bytes,
                        vision_task: asyncio.Task | None = None,
                        vision_start: float | None = None):
-    """レガシー: バイナリ音声データを一括処理."""
+    """傳統模式：一次處理整包二進位音訊資料。"""
     cfg = client_configs.get(client_id, {})
     size_kb = len(audio_data) / 1024
     log.info(f"[legacy] Audio from {client_id}: {size_kb:.1f}KB")
@@ -514,7 +514,7 @@ async def handle_audio(websocket, client_id: str, audio_data: bytes,
         log.info(f"Transcribed: {whisper_result['duration']:.1f}s → "
                  f"{len(raw_text)} chars in {transcribe_time:.1f}s")
 
-        # Vision結果（完了していれば使う、未完了なら待たずに進む）
+        # Vision 結果（若已完成就使用；若未完成則不等待直接繼續）
         if vision_task is not None:
             if vision_task.done():
                 try:
@@ -542,7 +542,7 @@ async def handle_audio(websocket, client_id: str, audio_data: bytes,
             })
             return
 
-        # partial送信
+        # 傳送 partial
         await send_json(websocket, {
             "type": "partial",
             "text": raw_text,
@@ -551,7 +551,7 @@ async def handle_audio(websocket, client_id: str, audio_data: bytes,
             "transcribe_time": round(transcribe_time, 2),
         })
 
-        # スラッシュコマンド検出
+        # Slash command 偵測
         detected_lang = whisper_result.get("language", cfg.get("language", "ja"))
         slash_commands = cfg.get("slash_commands", [])
         if slash_commands and raw_text.strip():
@@ -592,7 +592,7 @@ async def handle_audio(websocket, client_id: str, audio_data: bytes,
                 except Exception as e:
                     log.error(f"[legacy] Slash command match error: {e}")
 
-        # LLM整形
+        # LLM 整理
         refined_text = raw_text
         refine_time = 0
         if not cfg.get("raw", False):
@@ -632,23 +632,23 @@ async def handle_audio(websocket, client_id: str, audio_data: bytes,
 
 
 # =============================================================================
-#  共通ユーティリティ
+#  共用工具
 # =============================================================================
 
 async def send_json(websocket, data: dict):
-    """JSON応答を送信."""
+    """送出 JSON 回應。"""
     await websocket.send(json.dumps(data, ensure_ascii=False))
 
 
 async def main(host: str = "0.0.0.0", port: int = 8991):
-    """WebSocketサーバーを起動."""
+    """啟動 WebSocket server。"""
     log.info(f"Starting WebSocket server on ws://{host}:{port}")
     log.info(f"Protocol: streaming (stream_start/end) + legacy (audio_with_screenshot)")
     from voice_input import VISION_SERVERS
     vision_loc = "local" if len(VISION_SERVERS) == 1 and VISION_SERVERS[0] == OLLAMA_URL else f"remote: {','.join(VISION_SERVERS)}"
     log.info(f"Vision model: {VISION_MODEL} ({vision_loc})")
 
-    # Whisperモデルを事前ロード
+    # 預先載入 Whisper model
     from voice_input import _get_whisper_model
     log.info("Pre-loading Whisper model...")
     t0 = time.time()
