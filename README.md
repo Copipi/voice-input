@@ -108,6 +108,40 @@ pip3 install sounddevice numpy websockets pynput
 python3 mac_client.py --server ws://YOUR_SERVER_IP:8991
 ```
 
+## Quick start (Windows)
+
+Windows runs the same WebSocket client protocol as the Mac client.
+
+### 1. Setup
+
+```powershell
+python -m venv .venv
+.venv\Scripts\pip install -r requirements.txt
+
+# Client deps
+.venv\Scripts\pip install sounddevice numpy websockets pynput pyperclip
+
+# Optional (screen-aware context screenshot)
+.venv\Scripts\pip install pillow
+```
+
+### 2. Start server
+
+```powershell
+setx WHISPER_MODEL small
+setx LLM_MODEL gemma3:4b
+
+.venv\Scripts\python ws_server.py
+```
+
+### 3. Start Windows client
+
+```powershell
+.venv\Scripts\python win_client.py --server ws://localhost:8991 --model gemma3:4b
+```
+
+Default push-to-talk hotkey is **F8** (hold to record, release to paste). Use `--hotkey alt_l` if you want Left Alt.
+
 ## Usage
 
 ### Push-to-talk

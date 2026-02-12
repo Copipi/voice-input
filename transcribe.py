@@ -3,9 +3,21 @@
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
+
+
+def _bool_env(value: str) -> bool:
+    return str(value or "").strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _resolve_whisper_download_root() -> Path:
+    root = os.environ.get("WHISPER_DOWNLOAD_ROOT", "").strip()
+    if root:
+        return Path(root).expanduser().resolve()
+    return (Path(__file__).parent / "models" / "whisper").resolve()
 
 
 def main():
@@ -73,7 +85,15 @@ def main():
     print(f"Loading model '{args.model}' on {args.device} ({compute_type})...",
           file=sys.stderr)
     t0 = time.time()
-    model = WhisperModel(args.model, device=args.device, compute_type=compute_type)
+    download_root = _resolve_whisper_download_root()
+    download_root.mkdir(parents=True, exist_ok=True)
+    model = WhisperModel(
+        args.model,
+        device=args.device,
+        compute_type=compute_type,
+        download_root=str(download_root),
+        local_files_only=_bool_env(os.environ.get("WHISPER_LOCAL_FILES_ONLY", "")),
+    )
     print(f"Model loaded in {time.time() - t0:.1f}s", file=sys.stderr)
 
     print(f"Transcribing: {audio_path}", file=sys.stderr)

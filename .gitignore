@@ -7,5 +7,6 @@ build/
 *.wav
 *.mp3
 *.tmp
+models/
 .env
 CLAUDE.md

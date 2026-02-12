@@ -30,6 +30,11 @@ VISION_MODEL = os.environ.get("VISION_MODEL", "qwen3-vl:8b-instruct")
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "large-v3-turbo")
 WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "auto")
 WHISPER_COMPUTE = os.environ.get("WHISPER_COMPUTE_TYPE", "default")
+# Where to download/cache faster-whisper models.
+# Default: keep it inside this repo so the folder can be copied to another machine.
+WHISPER_DOWNLOAD_ROOT = os.environ.get("WHISPER_DOWNLOAD_ROOT", "")
+# If set ("1"/"true"), do not hit the network; only use already-downloaded files.
+WHISPER_LOCAL_FILES_ONLY = os.environ.get("WHISPER_LOCAL_FILES_ONLY", "")
 DEFAULT_LANGUAGE = os.environ.get("DEFAULT_LANGUAGE", "ja")
 
 # Vision servers: comma-separated Ollama URLs for remote vision inference.
@@ -84,6 +89,17 @@ def _load_prompt(lang: str) -> dict:
 _whisper_model = None
 
 
+def _bool_env(value: str) -> bool:
+    return str(value or "").strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _resolve_whisper_download_root() -> Path:
+    if WHISPER_DOWNLOAD_ROOT.strip():
+        return Path(WHISPER_DOWNLOAD_ROOT).expanduser().resolve()
+    # repo-local cache
+    return (Path(__file__).parent / "models" / "whisper").resolve()
+
+
 def _get_whisper_model():
     """Whisperモデルをシングルトンで取得（初回のみロード）."""
     global _whisper_model
@@ -96,7 +112,15 @@ def _get_whisper_model():
         compute = WHISPER_COMPUTE
         if compute == "default":
             compute = "float16" if device == "cuda" else "int8"
-        _whisper_model = WhisperModel(WHISPER_MODEL, device=device, compute_type=compute)
+        download_root = _resolve_whisper_download_root()
+        download_root.mkdir(parents=True, exist_ok=True)
+        _whisper_model = WhisperModel(
+            WHISPER_MODEL,
+            device=device,
+            compute_type=compute,
+            download_root=str(download_root),
+            local_files_only=_bool_env(WHISPER_LOCAL_FILES_ONLY),
+        )
     return _whisper_model
 
 
