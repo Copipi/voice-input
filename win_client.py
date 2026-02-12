@@ -13,7 +13,8 @@ Optional (screen context):
   pip install pillow
 
 Notes:
-  - Default hotkey is F8 (to avoid Alt/menu conflicts on Windows).
+    - Default hold-to-talk hotkey is F9.
+    - Default toggle hotkey is F10 (continuous dictation ON/OFF).
   - Hold hotkey to record, release to transcribe/refine, then paste.
   - Hold Ctrl while releasing hotkey to paste without Enter.
 """
@@ -60,6 +61,7 @@ def _parse_hotkey(name: str) -> pynput_keyboard.Key | pynput_keyboard.KeyCode:
         "f8": pynput_keyboard.Key.f8,
         "f9": pynput_keyboard.Key.f9,
         "f10": pynput_keyboard.Key.f10,
+        "f11": pynput_keyboard.Key.f11,
         "alt_l": pynput_keyboard.Key.alt_l,
         "alt_r": pynput_keyboard.Key.alt_r,
         "alt": pynput_keyboard.Key.alt_l,
@@ -283,7 +285,17 @@ class VoiceInputWinClient:
         paste: bool = True,
         use_screenshot: bool = True,
         hotkey: pynput_keyboard.Key | pynput_keyboard.KeyCode = pynput_keyboard.Key.f8,
-        hotkey_name: str = "ctrl_l+shift_l",
+        hotkey_name: str = "f9",
+        no_enter_hotkey: pynput_keyboard.Key | pynput_keyboard.KeyCode | None = pynput_keyboard.Key.f8,
+        no_enter_hotkey_name: str | None = "f8",
+        toggle_hotkey: pynput_keyboard.Key | pynput_keyboard.KeyCode | None = pynput_keyboard.Key.f10,
+        toggle_hotkey_name: str | None = "f10",
+        pause_hotkey: pynput_keyboard.Key | pynput_keyboard.KeyCode | None = pynput_keyboard.Key.f11,
+        pause_hotkey_name: str | None = "f11",
+        auto_segment_min_sec: float = 10.0,
+        auto_segment_max_sec: float = 20.0,
+        auto_segment_silence_sec: float = 1.2,
+        auto_segment_voice_threshold: float = 0.012,
         overlay: bool = True,
     ):
         self.server_url = server_url
@@ -295,10 +307,28 @@ class VoiceInputWinClient:
         self.use_screenshot = use_screenshot
         self.hotkey = hotkey
         self.hotkey_name = hotkey_name
+        self.no_enter_hotkey = no_enter_hotkey
+        self.no_enter_hotkey_name = (no_enter_hotkey_name or "").strip().lower() if no_enter_hotkey_name else None
+        self.toggle_hotkey = toggle_hotkey
+        self.toggle_hotkey_name = (toggle_hotkey_name or "").strip().lower() if toggle_hotkey_name else None
+        self.pause_hotkey = pause_hotkey
+        self.pause_hotkey_name = (pause_hotkey_name or "").strip().lower() if pause_hotkey_name else None
 
         self.recording = False
         self.audio_chunks: list[np.ndarray] = []
         self.stream: Optional[sd.InputStream] = None
+        self.continuous_mode = False
+        self.continuous_paused = False
+        self._audio_lock = threading.Lock()
+        self._segment_started_at = 0.0
+        self._last_voice_at = 0.0
+        self._last_toggle_press_at = 0.0
+        self._last_pause_press_at = 0.0
+
+        self.auto_segment_min_sec = auto_segment_min_sec
+        self.auto_segment_max_sec = auto_segment_max_sec
+        self.auto_segment_silence_sec = auto_segment_silence_sec
+        self.auto_segment_voice_threshold = auto_segment_voice_threshold
 
         self.ws: Optional[websockets.WebSocketClientProtocol] = None
         self.loop: Optional[asyncio.AbstractEventLoop] = None
@@ -330,8 +360,24 @@ class VoiceInputWinClient:
         print(f"  Screenshot: {'ON' if self.use_screenshot else 'OFF'}")
         print("")
         print(f"  [hold {self._hotkey_label()}]        → record → paste + Enter")
-        mod_label = "Alt" if self._no_enter_modifier == "alt" else "Ctrl"
-        print(f"  [hold {self._hotkey_label()} + {mod_label}] → record → paste only (no Enter)")
+        if self.no_enter_hotkey_name:
+            print(
+                f"  [hold {self._format_hotkey_label(self.no_enter_hotkey_name)}]        "
+                "→ record → paste only (no Enter)"
+            )
+        else:
+            mod_label = "Alt" if self._no_enter_modifier == "alt" else "Ctrl"
+            print(f"  [hold {self._hotkey_label()} + {mod_label}] → record → paste only (no Enter)")
+        if self.toggle_hotkey_name:
+            print(
+                f"  [press {self._format_hotkey_label(self.toggle_hotkey_name)}]      "
+                f"→ toggle continuous dictation ON/OFF (auto send {self.auto_segment_min_sec:.0f}-{self.auto_segment_max_sec:.0f}s)"
+            )
+        if self.pause_hotkey_name:
+            print(
+                f"  [press {self._format_hotkey_label(self.pause_hotkey_name)}]      "
+                "→ pause/resume continuous dictation"
+            )
         print("  [Ctrl+C] → quit")
         print("")
 
@@ -347,7 +393,13 @@ class VoiceInputWinClient:
             return
 
         # Fallback: pynput can monitor keys but cannot reliably suppress them.
-        if _is_combo_hotkey(self.hotkey_name):
+        if _is_combo_hotkey(self.hotkey_name) or (
+            self.no_enter_hotkey_name is not None and _is_combo_hotkey(self.no_enter_hotkey_name)
+        ) or (
+            self.toggle_hotkey_name is not None and _is_combo_hotkey(self.toggle_hotkey_name)
+        ) or (
+            self.pause_hotkey_name is not None and _is_combo_hotkey(self.pause_hotkey_name)
+        ):
             print("  Error: Combo hotkeys (e.g. ctrl+shift) require the `keyboard` package.")
             print("         Install it with: pip install keyboard")
             return
@@ -383,6 +435,42 @@ class VoiceInputWinClient:
         except Exception:
             return False
 
+        toggle_key_name: str | None = None
+        if self.toggle_hotkey_name:
+            try:
+                toggle_key_name = _normalize_hotkey_for_keyboard(self.toggle_hotkey_name)
+            except Exception:
+                print("  Warning: invalid --toggle-hotkey. Toggle mode disabled.")
+                toggle_key_name = None
+
+        no_enter_key_name: str | None = None
+        if self.no_enter_hotkey_name:
+            try:
+                no_enter_key_name = _normalize_hotkey_for_keyboard(self.no_enter_hotkey_name)
+            except Exception:
+                print("  Warning: invalid --no-enter-hotkey. No-enter hotkey disabled.")
+                no_enter_key_name = None
+
+        pause_key_name: str | None = None
+        if self.pause_hotkey_name:
+            try:
+                pause_key_name = _normalize_hotkey_for_keyboard(self.pause_hotkey_name)
+            except Exception:
+                print("  Warning: invalid --pause-hotkey. Pause mode disabled.")
+                pause_key_name = None
+
+        if toggle_key_name and toggle_key_name == key_name:
+            print("  Warning: --toggle-hotkey is same as --hotkey. Toggle mode disabled.")
+            toggle_key_name = None
+
+        if no_enter_key_name and no_enter_key_name in {key_name, toggle_key_name}:
+            print("  Warning: --no-enter-hotkey conflicts with other hotkeys. No-enter hotkey disabled.")
+            no_enter_key_name = None
+
+        if pause_key_name and pause_key_name in {key_name, toggle_key_name, no_enter_key_name}:
+            print("  Warning: --pause-hotkey conflicts with other hotkeys. Pause mode disabled.")
+            pause_key_name = None
+
         self._keyboard_backend = kb
         print("  Hotkey backend: keyboard (suppressed)")
 
@@ -399,6 +487,45 @@ class VoiceInputWinClient:
             mod_pressed = bool(kb.is_pressed(self._no_enter_modifier))
             self._send_enter = not mod_pressed
             self._stop_recording()
+
+        def _on_no_enter_press() -> None:
+            if not self.recording:
+                self._send_enter = False
+                self._start_recording(continuous=False)
+
+        def _on_no_enter_release() -> None:
+            if self.recording and not self.continuous_mode:
+                self._send_enter = False
+                self._stop_recording()
+
+        def _on_toggle() -> None:
+            now = time.time()
+            if now - self._last_toggle_press_at < 0.35:
+                return
+            self._last_toggle_press_at = now
+            if self.recording and self.continuous_mode:
+                self._send_enter = True
+                self._stop_recording()
+                return
+            if not self.recording:
+                self._send_enter = True
+                self._start_recording(continuous=True)
+
+        def _on_pause_toggle() -> None:
+            now = time.time()
+            if now - self._last_pause_press_at < 0.35:
+                return
+            self._last_pause_press_at = now
+            if not self.recording or not self.continuous_mode:
+                return
+            self.continuous_paused = not self.continuous_paused
+            if self.continuous_paused:
+                self.hud.update("recording", "ߟ Continuous paused")
+                print("\n  ߟ Continuous paused", end="", flush=True)
+            else:
+                self._last_voice_at = time.time()
+                self.hud.update("recording", "ߟ Recording (continuous)...")
+                print("\n  ߟ Continuous resumed", end="", flush=True)
 
         combo_parts = [p.strip() for p in key_name.split("+") if p.strip()]
         modifier_only_combo = len(combo_parts) > 1 and all(
@@ -433,6 +560,15 @@ class VoiceInputWinClient:
         else:
             kb.add_hotkey(key_name, _on_press, suppress=True, trigger_on_release=False)
             kb.add_hotkey(key_name, _on_release, suppress=True, trigger_on_release=True)
+
+        if no_enter_key_name:
+            kb.add_hotkey(no_enter_key_name, _on_no_enter_press, suppress=True, trigger_on_release=False)
+            kb.add_hotkey(no_enter_key_name, _on_no_enter_release, suppress=True, trigger_on_release=True)
+
+        if toggle_key_name:
+            kb.add_hotkey(toggle_key_name, _on_toggle, suppress=True, trigger_on_release=False)
+        if pause_key_name:
+            kb.add_hotkey(pause_key_name, _on_pause_toggle, suppress=True, trigger_on_release=False)
 
         try:
             while True:
@@ -539,32 +675,87 @@ class VoiceInputWinClient:
             self._ctrl_pressed = True
         if key in (pynput_keyboard.Key.alt_l, pynput_keyboard.Key.alt_r):
             self._alt_pressed = True
+        if self.toggle_hotkey is not None and key == self.toggle_hotkey:
+            now = time.time()
+            if now - self._last_toggle_press_at > 0.35:
+                self._last_toggle_press_at = now
+                if self.recording and self.continuous_mode:
+                    self._send_enter = True
+                    self._stop_recording()
+                elif not self.recording:
+                    self._send_enter = True
+                    self._start_recording(continuous=True)
+            return
+        if self.pause_hotkey is not None and key == self.pause_hotkey:
+            now = time.time()
+            if now - self._last_pause_press_at > 0.35:
+                self._last_pause_press_at = now
+                if self.recording and self.continuous_mode:
+                    self.continuous_paused = not self.continuous_paused
+                    if self.continuous_paused:
+                        self.hud.update("recording", "ߟ Continuous paused")
+                        print("\n  ߟ Continuous paused", end="", flush=True)
+                    else:
+                        self._last_voice_at = time.time()
+                        self.hud.update("recording", "ߟ Recording (continuous)...")
+                        print("\n  ߟ Continuous resumed", end="", flush=True)
+            return
+        if self.no_enter_hotkey is not None and key == self.no_enter_hotkey and not self.recording:
+            self._send_enter = False
+            self._start_recording(continuous=False)
+            return
         if key == self.hotkey and not self.recording:
-            self._start_recording()
+            self._start_recording(continuous=False)
 
     def _on_key_release(self, key) -> None:
         if key in (pynput_keyboard.Key.ctrl_l, pynput_keyboard.Key.ctrl_r):
             self._ctrl_pressed = False
         if key in (pynput_keyboard.Key.alt_l, pynput_keyboard.Key.alt_r):
             self._alt_pressed = False
-        if key == self.hotkey and self.recording:
+        if self.no_enter_hotkey is not None and key == self.no_enter_hotkey and self.recording and not self.continuous_mode:
+            self._send_enter = False
+            self._stop_recording()
+            return
+        if key == self.hotkey and self.recording and not self.continuous_mode:
             mod_pressed = self._alt_pressed if self._no_enter_modifier == "alt" else self._ctrl_pressed
             self._send_enter = not mod_pressed
             self._stop_recording()
 
-    def _start_recording(self) -> None:
+    def _start_recording(self, continuous: bool = False) -> None:
         if not self._connected or not self.ws or not self.loop:
             print("   Not connected to server")
             return
 
+        self.continuous_mode = continuous
+        self.continuous_paused = False
         self.recording = True
-        self.audio_chunks = []
-        print("   Recording...", end="", flush=True)
-        self.hud.update("recording", " Recording...")
+        with self._audio_lock:
+            self.audio_chunks = []
+        self._segment_started_at = time.time()
+        self._last_voice_at = self._segment_started_at
+        prefix = "  ߟ Recording (continuous)..." if self.continuous_mode else "  ߟ Recording..."
+        print(prefix, end="", flush=True)
+        self.hud.update("recording", "ߟ Recording (continuous)..." if self.continuous_mode else "ߟ Recording...")
+
+        self._send_stream_start(include_screenshot=self.use_screenshot and not self.raw)
+
+        self.stream = sd.InputStream(
+            samplerate=SAMPLE_RATE,
+            channels=CHANNELS,
+            dtype=DTYPE,
+            callback=self._audio_callback,
+            blocksize=1024,
+        )
+        self.stream.start()
+        self._schedule_stream_timer()
+
+    def _send_stream_start(self, include_screenshot: bool) -> None:
+        if not self.ws or not self.loop:
+            return
 
         start_msg: dict = {"type": "stream_start"}
 
-        if self.use_screenshot and not self.raw:
+        if include_screenshot:
             screenshot_b64 = self._capture_screenshot_b64()
             if screenshot_b64:
                 start_msg["screenshot"] = screenshot_b64
@@ -577,21 +768,14 @@ class VoiceInputWinClient:
             self.loop,
         )
 
-        self.stream = sd.InputStream(
-            samplerate=SAMPLE_RATE,
-            channels=CHANNELS,
-            dtype=DTYPE,
-            callback=self._audio_callback,
-            blocksize=1024,
-        )
-        self.stream.start()
-        self._schedule_stream_timer()
-
     def _stop_recording(self) -> None:
         if not self.recording:
             return
 
+        was_continuous = self.continuous_mode
         self.recording = False
+        self.continuous_mode = False
+        self.continuous_paused = False
         self._stop_stream_timer()
 
         if self.stream:
@@ -599,36 +783,50 @@ class VoiceInputWinClient:
             self.stream.close()
             self.stream = None
 
-        if not self.audio_chunks:
+        self._flush_current_segment(final=True)
+        if was_continuous:
+            print("  (continuous OFF)", end="", flush=True)
+
+    def _flush_current_segment(self, final: bool) -> None:
+        if not self.ws or not self.loop or not self._connected:
+            print(" ߟ Not connected")
+            self.hud.update("error", "ߟ Not connected")
+            return
+
+        with self._audio_lock:
+            if not self.audio_chunks:
+                audio_data = None
+            else:
+                audio_data = np.concatenate(self.audio_chunks)
+            self.audio_chunks = []
+
+        if audio_data is None:
             print(" (empty)")
             self._send_stream_end_only()
-            return
+        else:
+            duration = len(audio_data) / SAMPLE_RATE
+            print(f" {duration:.1f}s", end="", flush=True)
 
-        audio_data = np.concatenate(self.audio_chunks)
-        duration = len(audio_data) / SAMPLE_RATE
-        print(f" {duration:.1f}s", end="", flush=True)
+            if duration < 0.3:
+                print(" (too short, skipped)")
+                self._send_stream_end_only()
+            else:
+                wav_bytes = self._encode_wav(audio_data)
+                print(f" ({len(wav_bytes) // 1024}KB)", end="", flush=True)
 
-        if duration < 0.3:
-            print(" (too short, skipped)")
-            self._send_stream_end_only()
-            return
+                async def _send_final() -> None:
+                    assert self.ws is not None
+                    await self.ws.send(wav_bytes)
+                    await self.ws.send(json.dumps({"type": "stream_end"}))
 
-        wav_bytes = self._encode_wav(audio_data)
-        print(f" ({len(wav_bytes) // 1024}KB)", end="", flush=True)
+                asyncio.run_coroutine_threadsafe(_send_final(), self.loop)
+                print(" ߟ Sent.", end="", flush=True)
+                self.hud.update("refining", "ߟ Processing...")
 
-        if not self.ws or not self.loop or not self._connected:
-            print("  Not connected")
-            self.hud.update("error", " Not connected")
-            return
-
-        async def _send_final() -> None:
-            assert self.ws is not None
-            await self.ws.send(wav_bytes)
-            await self.ws.send(json.dumps({"type": "stream_end"}))
-
-        asyncio.run_coroutine_threadsafe(_send_final(), self.loop)
-        print("  Sent.", end="", flush=True)
-        self.hud.update("refining", " Processing...")
+        if self.recording and self.continuous_mode and not final:
+            self._segment_started_at = time.time()
+            self._last_voice_at = self._segment_started_at
+            self._send_stream_start(include_screenshot=False)
 
     def _schedule_stream_timer(self) -> None:
         self._stream_timer = threading.Timer(STREAM_INTERVAL, self._on_stream_tick)
@@ -643,13 +841,38 @@ class VoiceInputWinClient:
     def _on_stream_tick(self) -> None:
         if not self.recording or not self.ws or not self.loop or not self._connected:
             return
+        if self.continuous_mode and self.continuous_paused:
+            self._schedule_stream_timer()
+            return
         self._send_stream_chunk()
+        if self.continuous_mode:
+            self._auto_flush_if_needed()
         self._schedule_stream_timer()
 
-    def _send_stream_chunk(self) -> None:
-        if not self.audio_chunks or not self.ws or not self.loop:
+    def _auto_flush_if_needed(self) -> None:
+        now = time.time()
+        with self._audio_lock:
+            if not self.audio_chunks:
+                duration = 0.0
+            else:
+                duration = len(np.concatenate(self.audio_chunks)) / SAMPLE_RATE
+
+        if duration < self.auto_segment_min_sec:
             return
-        audio_data = np.concatenate(self.audio_chunks)
+
+        silence_sec = now - self._last_voice_at
+        if duration >= self.auto_segment_max_sec or silence_sec >= self.auto_segment_silence_sec:
+            reason = "max" if duration >= self.auto_segment_max_sec else "silence"
+            print(f"\n  ߟ Auto-send ({reason})", end="", flush=True)
+            self._flush_current_segment(final=False)
+
+    def _send_stream_chunk(self) -> None:
+        if not self.ws or not self.loop:
+            return
+        with self._audio_lock:
+            if not self.audio_chunks:
+                return
+            audio_data = np.concatenate(self.audio_chunks)
         duration = len(audio_data) / SAMPLE_RATE
         if duration < 0.5:
             return
@@ -667,7 +890,15 @@ class VoiceInputWinClient:
         if status:
             print(f"\n  Audio warning: {status}", file=sys.stderr)
         if self.recording:
-            self.audio_chunks.append(indata.copy())
+            if self.continuous_mode and self.continuous_paused:
+                return
+            chunk = indata.copy()
+            with self._audio_lock:
+                self.audio_chunks.append(chunk)
+            if self.continuous_mode:
+                energy = np.sqrt(np.mean((chunk.astype(np.float32) / 32768.0) ** 2))
+                if float(energy) >= self.auto_segment_voice_threshold:
+                    self._last_voice_at = time.time()
 
     @staticmethod
     def _encode_wav(audio: np.ndarray) -> bytes:
@@ -804,6 +1035,11 @@ class VoiceInputWinClient:
 
     def _hotkey_label(self) -> str:
         name = (self.hotkey_name or "").strip()
+        return self._format_hotkey_label(name)
+
+    @staticmethod
+    def _format_hotkey_label(name: str) -> str:
+        name = (name or "").strip()
         return name.upper() if name else "?"
 
 
@@ -816,6 +1052,8 @@ Dependencies:
   pip install sounddevice numpy websockets pynput pyperclip
 Optional (screen context):
   pip install pillow
+Recommended (Windows hotkey suppression / combo hotkeys):
+    pip install keyboard
 
 Example:
   python win_client.py --server ws://localhost:8991 --model gemma3:4b --language zh
@@ -835,9 +1073,42 @@ Example:
         "--hotkey",
         default="f9",
         help=(
-            "Hotkey name: f8|f9|f10|ctrl|ctrl_l|ctrl_r|shift|shift_l|shift_r|alt|alt_l|alt_r, "
+            "Hotkey name: f8|f9|f10|f11|ctrl|ctrl_l|ctrl_r|shift|shift_l|shift_r|alt|alt_l|alt_r, "
             "a single character, or a combo like ctrl+shift (default: f9)"
         ),
+    )
+    parser.add_argument(
+        "--no-enter-hotkey",
+        default="f8",
+        help="Push-to-talk hotkey that pastes without Enter. Use 'none' to disable (default: f8)",
+    )
+    parser.add_argument(
+        "--toggle-hotkey",
+        default="f10",
+        help="Press once to start/stop continuous dictation. Use 'none' to disable (default: f10)",
+    )
+    parser.add_argument(
+        "--pause-hotkey",
+        default="f11",
+        help="Continuous mode pause/resume hotkey. Use 'none' to disable (default: f11)",
+    )
+    parser.add_argument(
+        "--auto-segment-min",
+        type=float,
+        default=10.0,
+        help="Continuous mode: minimum segment seconds before auto-send can trigger (default: 10)",
+    )
+    parser.add_argument(
+        "--auto-segment-max",
+        type=float,
+        default=20.0,
+        help="Continuous mode: force auto-send at this segment length (default: 20)",
+    )
+    parser.add_argument(
+        "--auto-segment-silence",
+        type=float,
+        default=1.2,
+        help="Continuous mode: auto-send when silence reaches this many seconds after min duration (default: 1.2)",
     )
 
     args = parser.parse_args()
@@ -845,6 +1116,28 @@ Example:
     hotkey_name = (args.hotkey or "").strip().lower()
     if not hotkey_name:
         print("Error: --hotkey cannot be empty")
+        sys.exit(2)
+
+    no_enter_hotkey_name = (args.no_enter_hotkey or "").strip().lower()
+    if no_enter_hotkey_name in ("none", "off", "no", "disable", "disabled", "0"):
+        no_enter_hotkey_name = ""
+
+    toggle_hotkey_name = (args.toggle_hotkey or "").strip().lower()
+    if toggle_hotkey_name in ("none", "off", "no", "disable", "disabled", "0"):
+        toggle_hotkey_name = ""
+
+    pause_hotkey_name = (args.pause_hotkey or "").strip().lower()
+    if pause_hotkey_name in ("none", "off", "no", "disable", "disabled", "0"):
+        pause_hotkey_name = ""
+
+    if args.auto_segment_min <= 0 or args.auto_segment_max <= 0:
+        print("Error: --auto-segment-min/max must be positive")
+        sys.exit(2)
+    if args.auto_segment_min >= args.auto_segment_max:
+        print("Error: --auto-segment-min must be smaller than --auto-segment-max")
+        sys.exit(2)
+    if args.auto_segment_silence <= 0:
+        print("Error: --auto-segment-silence must be positive")
         sys.exit(2)
 
     # Combo hotkeys are handled by the `keyboard` backend. We still parse
@@ -859,6 +1152,39 @@ Example:
             print(f"Error: {e}")
             sys.exit(2)
 
+    no_enter_hotkey: pynput_keyboard.Key | pynput_keyboard.KeyCode | None = None
+    if no_enter_hotkey_name:
+        if _is_combo_hotkey(no_enter_hotkey_name):
+            no_enter_hotkey = pynput_keyboard.Key.f8
+        else:
+            try:
+                no_enter_hotkey = _parse_hotkey(no_enter_hotkey_name)
+            except ValueError as e:
+                print(f"Error: {e}")
+                sys.exit(2)
+
+    toggle_hotkey: pynput_keyboard.Key | pynput_keyboard.KeyCode | None = None
+    if toggle_hotkey_name:
+        if _is_combo_hotkey(toggle_hotkey_name):
+            toggle_hotkey = pynput_keyboard.Key.f8
+        else:
+            try:
+                toggle_hotkey = _parse_hotkey(toggle_hotkey_name)
+            except ValueError as e:
+                print(f"Error: {e}")
+                sys.exit(2)
+
+    pause_hotkey: pynput_keyboard.Key | pynput_keyboard.KeyCode | None = None
+    if pause_hotkey_name:
+        if _is_combo_hotkey(pause_hotkey_name):
+            pause_hotkey = pynput_keyboard.Key.f8
+        else:
+            try:
+                pause_hotkey = _parse_hotkey(pause_hotkey_name)
+            except ValueError as e:
+                print(f"Error: {e}")
+                sys.exit(2)
+
     client = VoiceInputWinClient(
         server_url=args.server,
         language=args.language,
@@ -869,6 +1195,15 @@ Example:
         use_screenshot=not args.no_screenshot,
         hotkey=hotkey,
         hotkey_name=hotkey_name,
+        no_enter_hotkey=no_enter_hotkey,
+        no_enter_hotkey_name=no_enter_hotkey_name or None,
+        toggle_hotkey=toggle_hotkey,
+        toggle_hotkey_name=toggle_hotkey_name or None,
+        pause_hotkey=pause_hotkey,
+        pause_hotkey_name=pause_hotkey_name or None,
+        auto_segment_min_sec=args.auto_segment_min,
+        auto_segment_max_sec=args.auto_segment_max,
+        auto_segment_silence_sec=args.auto_segment_silence,
         overlay=not args.no_overlay,
     )
     client.start()

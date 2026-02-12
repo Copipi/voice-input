@@ -141,6 +141,9 @@ setx LLM_MODEL gemma3:4b
 ```
 
 Default push-to-talk hotkey is **F9** (hold to record, release to paste). Use `--hotkey alt_l` if you want Left Alt.
+Default no-enter push-to-talk hotkey is **F8** (hold to record, release to paste without Enter). Configure with `--no-enter-hotkey`.
+
+Continuous dictation toggle hotkey is **F10** by default: press once to start always-on recording, auto-send segments around 10-20s based on silence, press again to stop. While continuous mode is ON, press **F11** to pause/resume audio capture without leaving continuous mode. You can configure with `--toggle-hotkey`, `--pause-hotkey`, `--auto-segment-min`, `--auto-segment-max`, `--auto-segment-silence`.
 
 Note: Microsoft Word uses **F8** for "Extend Selection". If Word selects text / overwrites previous paste, install `keyboard` (`pip install keyboard`) so the client can suppress the hotkey, or switch to `--hotkey f9`.
 

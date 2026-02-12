@@ -9,6 +9,9 @@ echo.
 set SERVER=ws://127.0.0.1:8991
 set MODEL=gemma3:4b
 set HOTKEY=f9
+set NO_ENTER_HOTKEY=f8
+set TOGGLE_HOTKEY=f10
+set PAUSE_HOTKEY=f11
 
 if not exist ".venv\Scripts\python.exe" (
   echo [voice-input] .venv not found. Bootstrapping with uv...
@@ -55,13 +58,19 @@ if errorlevel 1 (
 echo Server: %SERVER%
 echo Model:  %MODEL%
 echo Hotkey: %HOTKEY%
+echo No-Enter Hotkey: %NO_ENTER_HOTKEY%
+echo Toggle Hotkey: %TOGGLE_HOTKEY%
+echo Pause Hotkey: %PAUSE_HOTKEY%
 echo.
 
 REM Tips:
 REM - Hold %HOTKEY% to record, release to paste.
-REM - Hold Ctrl while releasing %HOTKEY% to paste without Enter.
+REM - Hold %NO_ENTER_HOTKEY% to record, release to paste without Enter.
+REM - Press %TOGGLE_HOTKEY% once to start continuous dictation,
+REM   auto-send by silence every ~10-20s, press again to stop.
+REM - While continuous dictation is ON, press %PAUSE_HOTKEY% to pause/resume audio capture.
 REM - Disable screenshot context: add --no-screenshot
 
-    .venv\Scripts\python.exe win_client.py --server %SERVER% --model %MODEL% --hotkey %HOTKEY% --language zh
+  .venv\Scripts\python.exe win_client.py --server %SERVER% --model %MODEL% --hotkey %HOTKEY% --no-enter-hotkey %NO_ENTER_HOTKEY% --toggle-hotkey %TOGGLE_HOTKEY% --pause-hotkey %PAUSE_HOTKEY% --language zh
 
 pause
