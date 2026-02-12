@@ -14,6 +14,7 @@
 """
 
 import argparse
+import ctypes
 import json
 import re
 import sys
@@ -87,6 +88,8 @@ def _load_prompt(lang: str) -> dict:
 
 
 _whisper_model = None
+_lcmap_checked = False
+_lcmap_available = False
 
 
 def _bool_env(value: str) -> bool:
@@ -122,6 +125,89 @@ def _get_whisper_model():
             local_files_only=_bool_env(WHISPER_LOCAL_FILES_ONLY),
         )
     return _whisper_model
+
+
+def convert_to_traditional_chinese(
+    text: str,
+    language: str | None = None,
+) -> str:
+    """將中文文字轉為繁體（Windows LCMapStringEx）。
+
+    - 僅在 language 為 zh* 時啟用。
+    - 僅在 Windows 上可用；其他平台回退原文。
+    - 失敗時回退原文，不中斷主要流程。
+    """
+    if not text:
+        return text
+
+    lang = (language or "").strip().lower()
+    if lang and not lang.startswith("zh"):
+        return text
+
+    if os.name != "nt":
+        return text
+
+    global _lcmap_checked, _lcmap_available
+    if not _lcmap_checked:
+        _lcmap_checked = True
+        _lcmap_available = hasattr(ctypes.windll.kernel32, "LCMapStringEx")
+        if _lcmap_available:
+            import logging
+
+            log = logging.getLogger("voice_input.zhconv")
+            log.info("Chinese conversion enabled via Windows LCMapStringEx")
+
+    if not _lcmap_available:
+        return text
+
+    LCMAP_TRADITIONAL_CHINESE = 0x04000000
+    try:
+        lcmap = ctypes.windll.kernel32.LCMapStringEx
+        lcmap.argtypes = [
+            ctypes.c_wchar_p,
+            ctypes.c_uint,
+            ctypes.c_wchar_p,
+            ctypes.c_int,
+            ctypes.c_wchar_p,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            ctypes.c_wchar_p,
+            ctypes.c_void_p,
+        ]
+        lcmap.restype = ctypes.c_int
+
+        needed = lcmap(
+            "zh-TW",
+            LCMAP_TRADITIONAL_CHINESE,
+            text,
+            len(text),
+            None,
+            0,
+            None,
+            None,
+            None,
+        )
+        if needed <= 0:
+            return text
+
+        buffer = ctypes.create_unicode_buffer(needed)
+        result_len = lcmap(
+            "zh-TW",
+            LCMAP_TRADITIONAL_CHINESE,
+            text,
+            len(text),
+            buffer,
+            needed,
+            None,
+            None,
+            None,
+        )
+        if result_len <= 0:
+            return text
+
+        return buffer.value
+    except Exception:
+        return text
 
 
 def transcribe(audio_path: str, language: str | None = None,
@@ -200,6 +286,30 @@ def analyze_screenshot(screenshot_b64: str, vision_model: str = VISION_MODEL) ->
             msg = data.get("message", {})
             content = msg.get("content", "")
 
+            # Some VLMs may emit placeholder tokens like "[img]" repeatedly.
+            # Clean them to avoid polluting context_hint.
+            if content:
+                lines = [line.strip() for line in content.splitlines()]
+                img_lines = [line for line in lines if line.lower() == "[img]"]
+                if img_lines:
+                    cleaned = "\n".join(
+                        line for line in lines if line and line.lower() != "[img]"
+                    ).strip()
+                    if cleaned:
+                        log.warning(
+                            "Vision output contained %d [img] placeholders; "
+                            "cleaned context (%d -> %d chars)",
+                            len(img_lines),
+                            len(content),
+                            len(cleaned),
+                        )
+                        content = cleaned
+                    else:
+                        log.warning(
+                            "Vision output was only [img] placeholders; ignoring context"
+                        )
+                        content = ""
+
             analysis_time = time.time() - t0
             log.info(f"Vision done in {analysis_time:.1f}s "
                      f"({len(content)} chars):\n{content}")
@@ -223,11 +333,13 @@ def refine_with_llm(
     language: str = DEFAULT_LANGUAGE,
     custom_prompt: str | None = None,
     context_hint: str | None = None,
+    output_language: str | None = None,
 ) -> dict:
     """透過 Ollama API 整理文字（使用依語言提示詞）。"""
     import requests
 
-    prompt_data = _load_prompt(language)
+    prompt_lang = (output_language or language or DEFAULT_LANGUAGE)
+    prompt_data = _load_prompt(prompt_lang)
     system_prompt = prompt_data["system_prompt"]
 
     if context_hint:
@@ -236,6 +348,19 @@ def refine_with_llm(
     if custom_prompt:
         prefix = prompt_data.get("custom_prompt_prefix", "Additional instructions:")
         system_prompt = f"{system_prompt}\n\n{prefix} {custom_prompt}"
+    if output_language:
+        target = output_language.split("-")[0].lower()
+        target_label = {
+            "en": "English",
+            "ja": "Japanese",
+            "ko": "Korean",
+            "zh": "Traditional Chinese",
+        }.get(target, output_language)
+        system_prompt = (
+            f"{system_prompt}\n\n"
+            f"Output language requirement: The final answer must be in {target_label}. "
+            "Translate faithfully and naturally. Do not include explanations about translation."
+        )
 
     # Few-shot examples + 模板，明確指定這是「整理任務」
     messages = [{"role": "system", "content": system_prompt}]
@@ -247,18 +372,62 @@ def refine_with_llm(
     messages.append({"role": "user", "content": user_template.format(text=raw_text)})
 
     t0 = time.time()
-    resp = requests.post(
-        f"{OLLAMA_URL}/api/chat",
-        json={
-            "model": model,
-            "messages": messages,
-            "stream": False,
-            "think": "low",
-            "options": {"temperature": 0.1, "num_predict": 8192, "num_ctx": 16384},
-        },
-        timeout=120,
-    )
-    resp.raise_for_status()
+    payload = {
+        "model": model,
+        "messages": messages,
+        "stream": False,
+        "think": "low",
+        "options": {"temperature": 0.1, "num_predict": 8192, "num_ctx": 16384},
+    }
+
+    resp = None
+    try:
+        resp = requests.post(
+            f"{OLLAMA_URL}/api/chat",
+            json=payload,
+            timeout=120,
+        )
+        resp.raise_for_status()
+    except requests.HTTPError as e:
+        import logging
+
+        log = logging.getLogger("voice_input.refine")
+        status = e.response.status_code if e.response is not None else None
+        body = (e.response.text or "") if e.response is not None else ""
+        body_preview = body[:400].replace("\n", " ")
+
+        # Some Ollama/model combinations reject `think` and return 400.
+        # Retry once without `think` for compatibility.
+        if status == 400 and "think" in body.lower():
+            log.warning(
+                "Refine request rejected `think`; retrying without think "
+                "(model=%s, status=%s, body=%s)",
+                model,
+                status,
+                body_preview,
+            )
+            payload.pop("think", None)
+            resp = requests.post(
+                f"{OLLAMA_URL}/api/chat",
+                json=payload,
+                timeout=120,
+            )
+            resp.raise_for_status()
+        else:
+            log.error(
+                "Refine request failed (model=%s, status=%s, body=%s)",
+                model,
+                status,
+                body_preview,
+            )
+            raise RuntimeError(
+                f"Ollama refine failed (model={model}, status={status}): "
+                f"{body_preview or str(e)}"
+            ) from e
+
+    if resp is None:
+        raise RuntimeError("Ollama refine failed: no response")
+
     data = resp.json()
     refine_time = time.time() - t0
 
@@ -386,6 +555,7 @@ def process_audio(
     model: str = DEFAULT_MODEL,
     raw_only: bool = False,
     custom_prompt: str | None = None,
+    output_language: str | None = None,
     output_format: str = "text",
     quiet: bool = False,
 ) -> dict:
@@ -414,6 +584,7 @@ def process_audio(
             model=model,
             language=whisper_result.get("language", language or DEFAULT_LANGUAGE),
             custom_prompt=custom_prompt,
+            output_language=output_language,
         )
         result["refined_text"] = llm_result["refined_text"]
         result["refine_time"] = llm_result["refine_time"]
@@ -430,6 +601,17 @@ def process_audio(
                 f"Total: {total:.1f}s",
                 file=sys.stderr,
             )
+
+    detected_lang = output_language or result.get("language", language or DEFAULT_LANGUAGE)
+    result["raw_text"] = convert_to_traditional_chinese(
+        result.get("raw_text", ""),
+        language=detected_lang,
+    )
+    if result.get("refined_text"):
+        result["refined_text"] = convert_to_traditional_chinese(
+            result["refined_text"],
+            language=detected_lang,
+        )
 
     return result
 
@@ -455,6 +637,7 @@ class VoiceInputHandler(BaseHTTPRequestHandler):
                 "model": f"Ollama model (default: {DEFAULT_MODEL})",
                 "raw": "true to skip LLM refinement",
                 "prompt": "Custom refinement instruction",
+                "output_language": "Force final output language (e.g. en, zh, ja, ko)",
             },
         })
 
@@ -477,6 +660,7 @@ class VoiceInputHandler(BaseHTTPRequestHandler):
         model = params.get("model", [DEFAULT_MODEL])[0]
         raw_only = params.get("raw", ["false"])[0].lower() == "true"
         custom_prompt = params.get("prompt", [None])[0]
+        output_language = params.get("output_language", [None])[0]
 
         # Save uploaded audio to temp file
         content_type = self.headers.get("Content-Type", "")
@@ -503,6 +687,7 @@ class VoiceInputHandler(BaseHTTPRequestHandler):
                 model=model,
                 raw_only=raw_only,
                 custom_prompt=custom_prompt,
+                output_language=output_language,
                 quiet=True,
             )
             output = {
@@ -599,6 +784,7 @@ Examples:
     parser.add_argument("-m", "--model", default=DEFAULT_MODEL, help=f"Ollama model (default: {DEFAULT_MODEL})")
     parser.add_argument("--raw", action="store_true", help="Skip LLM refinement")
     parser.add_argument("-p", "--prompt", default=None, help="Custom refinement prompt")
+    parser.add_argument("--output-language", default=None, help="Force final output language (e.g., en, zh, ja, ko)")
     parser.add_argument("-o", "--output", default="text", choices=["text", "json"], help="Output format")
     parser.add_argument("-q", "--quiet", action="store_true", help="Suppress progress messages")
 
@@ -615,6 +801,7 @@ Examples:
         model=args.model,
         raw_only=args.raw,
         custom_prompt=args.prompt,
+        output_language=args.output_language,
         quiet=args.quiet,
     )
 

@@ -169,6 +169,7 @@ python3 mac_client.py [options]
   -l, --language CODE   Language hint (default: ja)
   -m, --model NAME      Ollama model for refinement
   --raw                 Skip LLM refinement, Whisper output only
+  --output-language CODE  Force final output language (e.g., en)
   --no-screenshot       Disable screen context
 ```
 

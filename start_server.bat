@@ -8,7 +8,7 @@ echo.
 
 REM Ollama settings
 set OLLAMA_URL=http://127.0.0.1:11434
-set LLM_MODEL=gemma3:4b
+set LLM_MODEL=gemma3:12b-it-qat
 set VISION_MODEL=qwen3-vl:8b-instruct
 
 REM Whisper model (adjust if you want higher accuracy)

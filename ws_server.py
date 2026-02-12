@@ -35,6 +35,7 @@ import websockets
 from voice_input import (
     transcribe,
     refine_with_llm,
+    convert_to_traditional_chinese,
     detect_slash_prefix,
     match_slash_command,
     analyze_screenshot,
@@ -95,6 +96,7 @@ async def handle_client(websocket):
         "model": DEFAULT_MODEL,
         "raw": False,
         "prompt": None,
+        "output_language": None,
     }
     state = StreamState()
     stream_states[client_id] = state
@@ -112,7 +114,7 @@ async def handle_client(websocket):
 
                 if msg_type == "config":
                     cfg = client_configs[client_id]
-                    for key in ("language", "model", "prompt"):
+                    for key in ("language", "model", "prompt", "output_language"):
                         if key in data:
                             cfg[key] = data[key]
                     if "raw" in data:
@@ -200,8 +202,19 @@ async def handle_stream_start(websocket, client_id: str, data: dict):
     # 優先順序：text_context > screenshot > 無
     text_context = data.get("text_context", "")
     screenshot_b64 = data.get("screenshot", "")
+    has_screenshot = bool(screenshot_b64)
+    raw_mode = bool(cfg.get("raw", False))
+    vision_enabled = has_screenshot and not raw_mode and not bool(text_context)
 
-    if text_context and not cfg.get("raw", False):
+    log.info(
+        "stream_start debug: client=%s vision_enabled=%s vision_model=%s has_screenshot=%s",
+        client_id,
+        vision_enabled,
+        VISION_MODEL,
+        has_screenshot,
+    )
+
+    if text_context and not raw_mode:
         # AX 文字擷取成功 → 不需要 Vision，情境可立即確定
         if len(text_context) > MAX_CONTEXT_LEN:
             text_context = text_context[:MAX_CONTEXT_LEN] + "..."
@@ -212,7 +225,7 @@ async def handle_stream_start(websocket, client_id: str, data: dict):
         await send_json(websocket, {"type": "stream_ack"})
         # AX 文字可立即使用，直接通知 vision_ready
         await send_json(websocket, {"type": "status", "stage": "vision_ready"})
-    elif screenshot_b64 and not cfg.get("raw", False):
+    elif screenshot_b64 and not raw_mode:
         # 截圖 → 維持原本行為：非同步啟動 Vision
         loop = asyncio.get_event_loop()
         state.vision_start = time.time()
@@ -461,6 +474,7 @@ async def handle_stream_end(websocket, client_id: str):
                     language=detected_lang,
                     custom_prompt=cfg.get("prompt"),
                     context_hint=context_hint if context_hint else None,
+                    output_language=cfg.get("output_language"),
                 ),
             )
             refine_time = time.time() - t0
@@ -471,15 +485,20 @@ async def handle_stream_end(websocket, client_id: str):
             log.error(f"Refine error: {e}")
             refine_time = time.time() - t0
 
+    output_lang = cfg.get("output_language") or detected_lang
+    raw_text_out = convert_to_traditional_chinese(raw_text, language=output_lang)
+    refined_text_out = convert_to_traditional_chinese(refined_text, language=output_lang)
+    context_hint_out = convert_to_traditional_chinese(context_hint, language=output_lang)
+
     await send_json(websocket, {
         "type": "result",
-        "text": refined_text,
-        "raw_text": raw_text,
+        "text": refined_text_out,
+        "raw_text": raw_text_out,
         "duration": duration,
         "transcribe_time": round(transcribe_time, 2),
         "analysis_time": round(analysis_time, 2),
         "refine_time": round(refine_time, 2),
-        "context": context_hint,
+        "context": context_hint_out,
     })
 
 
@@ -606,22 +625,37 @@ async def handle_audio(websocket, client_id: str, audio_data: bytes,
                     language=detected_lang,
                     custom_prompt=cfg.get("prompt"),
                     context_hint=context_hint,
+                    output_language=cfg.get("output_language"),
                 ),
             )
             refine_time = time.time() - t0
             refined_text = llm_result["refined_text"]
             log.info(f"Refined in {refine_time:.1f}s (lang={detected_lang})")
 
+        output_lang = cfg.get("output_language") or detected_lang
+        raw_text_out = convert_to_traditional_chinese(
+            raw_text,
+            language=output_lang,
+        )
+        refined_text_out = convert_to_traditional_chinese(
+            refined_text,
+            language=output_lang,
+        )
+        context_hint_out = convert_to_traditional_chinese(
+            context_hint or "",
+            language=output_lang,
+        )
+
         await send_json(websocket, {
             "type": "result",
-            "text": refined_text,
-            "raw_text": raw_text,
+            "text": refined_text_out,
+            "raw_text": raw_text_out,
             "language": whisper_result.get("language", ""),
             "duration": whisper_result.get("duration", 0),
             "transcribe_time": round(transcribe_time, 2),
             "analysis_time": round(analysis_time, 2),
             "refine_time": round(refine_time, 2),
-            "context": context_hint,
+            "context": context_hint_out,
         })
 
     except Exception as e:

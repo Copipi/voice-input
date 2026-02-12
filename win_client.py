@@ -280,6 +280,7 @@ class VoiceInputWinClient:
         server_url: str,
         language: str = "ja",
         model: str = "gpt-oss:20b",
+        output_language: str | None = None,
         raw: bool = False,
         prompt: str | None = None,
         paste: bool = True,
@@ -301,6 +302,7 @@ class VoiceInputWinClient:
         self.server_url = server_url
         self.language = language
         self.model = model
+        self.output_language = output_language
         self.raw = raw
         self.prompt = prompt
         self.paste = paste
@@ -354,6 +356,8 @@ class VoiceInputWinClient:
         print("voice-input (Windows client)")
         print(f"  Server:     {self.server_url}")
         print(f"  Language:   {self.language}")
+        if self.output_language:
+            print(f"  Output:     {self.output_language} (forced)")
         print(f"  Model:      {self.model}")
         print(f"  Hotkey:     {self._hotkey_label()}")
         print(f"  Paste:      {'Ctrl+V' if self.paste else 'clipboard only'}")
@@ -604,6 +608,7 @@ class VoiceInputWinClient:
                         "type": "config",
                         "language": self.language,
                         "model": self.model,
+                        "output_language": self.output_language,
                         "raw": self.raw,
                         "prompt": self.prompt,
                         "slash_commands": self._scan_slash_commands(),
@@ -1064,6 +1069,7 @@ Example:
     parser.add_argument("-s", "--server", default=default_server, help=f"WebSocket server URL (default: {default_server})")
     parser.add_argument("-l", "--language", default="zh", help="Language hint (default: ja)")
     parser.add_argument("-m", "--model", default="gpt-oss:20b", help="Ollama model for refinement")
+    parser.add_argument("--output-language", default=None, help="Force final output language (e.g., en, zh, ja, ko)")
     parser.add_argument("--raw", action="store_true", help="Skip LLM refinement")
     parser.add_argument("-p", "--prompt", default=None, help="Custom refinement prompt")
     parser.add_argument("--no-paste", action="store_true", help="Clipboard only; don't auto-paste")
@@ -1189,6 +1195,7 @@ Example:
         server_url=args.server,
         language=args.language,
         model=args.model,
+        output_language=args.output_language,
         raw=args.raw,
         prompt=args.prompt,
         paste=not args.no_paste,

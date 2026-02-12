@@ -238,12 +238,14 @@ if __name__ == "__main__":
 
 class VoiceInputClient:
     def __init__(self, server_url: str, language: str = "ja",
-                 model: str = "gpt-oss:20b", raw: bool = False,
+                 model: str = "gpt-oss:20b", output_language: str | None = None,
+                 raw: bool = False,
                  prompt: str | None = None, paste: bool = True,
                  use_screenshot: bool = True):
         self.server_url = server_url
         self.language = language
         self.model = model
+        self.output_language = output_language
         self.raw = raw
         self.prompt = prompt
         self.paste = paste
@@ -266,6 +268,8 @@ class VoiceInputClient:
         print(f"voice-input client")
         print(f"  Server:   {self.server_url}")
         print(f"  Language: {self.language}")
+        if self.output_language:
+            print(f"  Output:   {self.output_language} (forced)")
         print(f"  Model:    {self.model}")
         print(f"  Paste:    {'clipboard+Cmd+V' if self.paste else 'clipboard only'}")
         print(f"  Screenshot: {'ON (context-aware)' if self.use_screenshot else 'OFF'}")
@@ -316,6 +320,7 @@ class VoiceInputClient:
                         "type": "config",
                         "language": self.language,
                         "model": self.model,
+                        "output_language": self.output_language,
                         "raw": self.raw,
                         "prompt": self.prompt,
                         "slash_commands": self._scan_slash_commands(),
@@ -920,6 +925,7 @@ Usage:
     )
     parser.add_argument("-l", "--language", default="ja", help="Language (default: ja)")
     parser.add_argument("-m", "--model", default="gpt-oss:20b", help="Ollama model")
+    parser.add_argument("--output-language", default=None, help="Force final output language (e.g., en, zh, ja, ko)")
     parser.add_argument("--raw", action="store_true", help="Skip LLM refinement")
     parser.add_argument("-p", "--prompt", default=None, help="Custom refinement prompt")
     parser.add_argument(
@@ -938,6 +944,7 @@ Usage:
         server_url=args.server,
         language=args.language,
         model=args.model,
+        output_language=args.output_language,
         raw=args.raw,
         prompt=args.prompt,
         paste=not args.no_paste,
