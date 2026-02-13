@@ -85,6 +85,22 @@ class StreamState:
 stream_states: dict[str, StreamState] = {}
 
 
+def _sanitize_json_value(value):
+    """Recursively sanitize values for JSON/WebSocket transport.
+
+    Removes invalid surrogate code points that cannot be encoded as UTF-8.
+    """
+    if isinstance(value, str):
+        return value.encode("utf-8", errors="replace").decode("utf-8")
+    if isinstance(value, dict):
+        return {k: _sanitize_json_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_json_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_sanitize_json_value(item) for item in value]
+    return value
+
+
 async def handle_client(websocket):
     """處理 WebSocket client。"""
     addr = websocket.remote_address
@@ -671,7 +687,13 @@ async def handle_audio(websocket, client_id: str, audio_data: bytes,
 
 async def send_json(websocket, data: dict):
     """送出 JSON 回應。"""
-    await websocket.send(json.dumps(data, ensure_ascii=False))
+    safe_data = _sanitize_json_value(data)
+    message = json.dumps(safe_data, ensure_ascii=False)
+    try:
+        await websocket.send(message)
+    except UnicodeEncodeError:
+        fallback = message.encode("utf-8", errors="replace").decode("utf-8")
+        await websocket.send(fallback)
 
 
 async def main(host: str = "0.0.0.0", port: int = 8991):
