@@ -40,6 +40,7 @@ from voice_input import (
     match_slash_command,
     analyze_screenshot,
     DEFAULT_MODEL,
+    DEFAULT_LANGUAGE,
     VISION_MODEL,
     OLLAMA_URL,
 )
@@ -108,7 +109,7 @@ async def handle_client(websocket):
     log.info(f"Client connected: {client_id}")
 
     client_configs[client_id] = {
-        "language": "ja",
+        "language": DEFAULT_LANGUAGE,
         "model": DEFAULT_MODEL,
         "raw": False,
         "prompt": None,
@@ -355,7 +356,7 @@ async def handle_stream_end(websocket, client_id: str):
     raw_text = ""
     transcribe_time = 0
     duration = 0
-    detected_lang = cfg.get("language", "ja")
+    detected_lang = cfg.get("language", DEFAULT_LANGUAGE)
     if state.latest_audio:
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             f.write(state.latest_audio)
@@ -587,7 +588,7 @@ async def handle_audio(websocket, client_id: str, audio_data: bytes,
         })
 
         # Slash command 偵測
-        detected_lang = whisper_result.get("language", cfg.get("language", "ja"))
+        detected_lang = whisper_result.get("language", cfg.get("language", DEFAULT_LANGUAGE))
         slash_commands = cfg.get("slash_commands", [])
         if slash_commands and raw_text.strip():
             is_slash, remaining = detect_slash_prefix(raw_text)
